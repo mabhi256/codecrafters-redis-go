@@ -352,7 +352,9 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 			if timeout > 0 {
-				timer := time.After(time.Duration(timeout) * time.Second)
+				// fmt.Println("timeout:", timeout)
+
+				timer := time.After(time.Duration(timeout*1000) * time.Millisecond)
 
 				for {
 					select {
@@ -371,7 +373,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 						}
 
 					case <-timer:
-						_, err = sendNullBulkString(conn)
+						_, err = sendNullArray(conn)
 						if err != nil {
 							fmt.Println("Error sending BLPOP element:", err.Error())
 							os.Exit(1)

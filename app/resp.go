@@ -121,3 +121,7 @@ func sendArray(conn net.Conn, values []string) (int, error) {
 
 	return 0, err
 }
+
+func sendNullArray(conn net.Conn) (int, error) {
+	return conn.Write([]byte("*-1\r\n"))
+}
