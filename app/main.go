@@ -280,11 +280,20 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 			}
 
 		case "LPOP":
-			if len(args) != 2 {
-				fmt.Println("Expecting 'redis-cli LLEN <list-name>', got:", args)
+			if len(args) < 2 {
+				fmt.Println("Expecting 'redis-cli LPOP <list-name> (<pop-count>)', got:", args)
 				os.Exit(1)
 			}
 			key := args[1]
+			count := 1
+			if len(args) == 3 {
+				count, err = strconv.Atoi(args[2])
+				if err != nil {
+					fmt.Println("Error reading pop count:", err.Error())
+					os.Exit(1)
+				}
+			}
+
 			list, exists := cache[key]
 			var entry *ListEntry
 			if exists {
@@ -294,10 +303,21 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 			var err error
 			if len(entry.value) == 0 {
 				_, err = sendNullBulkString(conn)
-			} else {
+			} else if count == 1 {
 				peek := entry.value[0]
 				entry.value = entry.value[1:]
 				_, err = sendBulkString(conn, peek)
+			} else {
+				count = min(len(entry.value), count)
+				values := entry.value[:count]
+
+				if count == len(entry.value) {
+					delete(cache, key)
+				} else {
+					entry.value = entry.value[count:]
+				}
+
+				_, err = sendArray(conn, values)
 			}
 
 			if err != nil {
