@@ -25,20 +25,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	data1 := receive(conn)
-	fmt.Println("data1:", data1)
+	for {
+		data1 := receive(conn)
+		fmt.Println("data1:", data1)
 
-	data2 := receive(conn)
-	fmt.Println("data2:", data2)
+		data2 := receive(conn)
+		fmt.Println("data2:", data2)
 
-	command := receive(conn)
+		command := receive(conn)
 
-	switch command {
-	case "PING":
-		conn.Write([]byte("+PONG\r\n"))
+		switch command {
+		case "PING":
+			conn.Write([]byte("+PONG\r\n"))
 
-	default:
-		fmt.Println("Unknown command:", command)
-		os.Exit(1)
+		default:
+			fmt.Println("Unknown command:", command)
+			os.Exit(1)
+		}
 	}
 }
