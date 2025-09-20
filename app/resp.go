@@ -1,12 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"net"
-	"os"
 )
 
-func receive(conn net.Conn) string {
+func receive(conn net.Conn) (string, error) {
 	msg := ""
 
 	CR := false
@@ -15,8 +13,7 @@ func receive(conn net.Conn) string {
 		bytes := make([]byte, 1)
 		_, err := conn.Read(bytes)
 		if err != nil {
-			fmt.Println("Error reading bytes from connection: ", err.Error())
-			os.Exit(1)
+			return "", err
 		}
 
 		recv := string(bytes)
@@ -30,5 +27,5 @@ func receive(conn net.Conn) string {
 		}
 	}
 
-	return msg
+	return msg, nil
 }

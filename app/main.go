@@ -2,13 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 )
-
-// Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
-var _ = net.Listen
-var _ = os.Exit
 
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -19,20 +16,46 @@ func main() {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
 	}
-	conn, err := l.Accept()
-	if err != nil {
-		fmt.Println("Error accepting connection: ", err.Error())
-		os.Exit(1)
-	}
+	defer l.Close()
 
 	for {
-		data1 := receive(conn)
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			continue
+		}
+
+		go handleRequest(conn)
+	}
+}
+
+func handleRequest(conn net.Conn) {
+	defer conn.Close()
+
+	for {
+		data1, err := receive(conn)
+		if err != nil && err != io.EOF {
+			fmt.Println("Error receiving data:", err.Error())
+			os.Exit(1)
+		}
+		if err == io.EOF {
+			return
+		}
+
 		fmt.Println("data1:", data1)
 
-		data2 := receive(conn)
+		data2, err := receive(conn)
+		if err != nil {
+			fmt.Println("Error receiving data:", err.Error())
+			os.Exit(1)
+		}
 		fmt.Println("data2:", data2)
 
-		command := receive(conn)
+		command, err := receive(conn)
+		if err != nil {
+			fmt.Println("Error receiving data:", err.Error())
+			os.Exit(1)
+		}
 
 		switch command {
 		case "PING":
