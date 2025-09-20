@@ -185,6 +185,32 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 				os.Exit(1)
 			}
 
+		case "LPUSH":
+			if len(args) < 3 {
+				fmt.Println("Expecting 'redis-cli RPUSH <list-name> <value>', got:", args)
+				os.Exit(1)
+			}
+			key := args[1]
+			list, exists := cache[key]
+
+			var entry *ListEntry
+			if exists {
+				entry = list.(*ListEntry)
+			} else {
+				entry = &ListEntry{value: []string{}, expiry: -1}
+			}
+
+			for _, item := range args[2:] {
+				entry.value = append([]string{item}, entry.value...)
+			}
+			cache[key] = entry
+
+			_, err = sendInteger(conn, len(entry.value))
+			if err != nil {
+				fmt.Println("Error sending integer:", err.Error())
+				os.Exit(1)
+			}
+
 		case "LRANGE":
 			if len(args) < 4 {
 				fmt.Println("Expecting 'redis-cli LRANGE <list-name> <start> <stop>', got:", args)
