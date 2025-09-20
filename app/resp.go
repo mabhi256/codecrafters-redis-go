@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"net"
+	"strconv"
 )
 
 func receive(conn net.Conn) (string, error) {
@@ -28,4 +30,57 @@ func receive(conn net.Conn) (string, error) {
 	}
 
 	return msg, nil
+}
+
+// Receive command from client as an array of bulk string
+func receiveCommand(conn net.Conn) ([]string, error) {
+	lengthData, err := receive(conn)
+	if err != nil {
+		return nil, err
+	}
+	if len(lengthData) <= 0 || lengthData[0] != '*' {
+		return nil, fmt.Errorf("expecting first byte * for command")
+	}
+
+	lengthStr := lengthData[1:]
+	length, err := strconv.Atoi(lengthStr)
+	if err != nil {
+		return nil, err
+	}
+
+	args := []string{}
+	for range length {
+		argLengthData, err := receive(conn)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(argLengthData) <= 0 || argLengthData[0] != '$' {
+			return nil, fmt.Errorf("expecting byte $ for command arg")
+		}
+
+		argLengthStr := argLengthData[1:]
+		argLength, err := strconv.Atoi(argLengthStr)
+		if err != nil {
+			return nil, err
+		}
+
+		arg, err := receive(conn)
+		if err != nil {
+			return nil, err
+		}
+		if len(arg) != argLength {
+			return nil, fmt.Errorf("expecting arg keyword of length: %d, received %s", argLength, arg)
+		}
+
+		args = append(args, arg)
+	}
+
+	return args, nil
+}
+
+func sendBulkString(conn net.Conn, value string) (int, error) {
+	response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+
+	return conn.Write([]byte(response))
 }

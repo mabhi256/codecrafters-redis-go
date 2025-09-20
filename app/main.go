@@ -33,7 +33,7 @@ func handleRequest(conn net.Conn) {
 	defer conn.Close()
 
 	for {
-		data1, err := receive(conn)
+		args, err := receiveCommand(conn)
 		if err != nil && err != io.EOF {
 			fmt.Println("Error receiving data:", err.Error())
 			os.Exit(1)
@@ -42,24 +42,19 @@ func handleRequest(conn net.Conn) {
 			return
 		}
 
-		fmt.Println("data1:", data1)
-
-		data2, err := receive(conn)
-		if err != nil {
-			fmt.Println("Error receiving data:", err.Error())
-			os.Exit(1)
-		}
-		fmt.Println("data2:", data2)
-
-		command, err := receive(conn)
-		if err != nil {
-			fmt.Println("Error receiving data:", err.Error())
-			os.Exit(1)
-		}
+		fmt.Println("args:", args)
+		command := args[0]
 
 		switch command {
 		case "PING":
 			conn.Write([]byte("+PONG\r\n"))
+
+		case "ECHO":
+			_, err = sendBulkString(conn, args[1])
+			if err != nil {
+				fmt.Println("Error sending data:", err.Error())
+				os.Exit(1)
+			}
 
 		default:
 			fmt.Println("Unknown command:", command)
