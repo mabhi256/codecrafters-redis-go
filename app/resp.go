@@ -94,3 +94,9 @@ func sendBulkString(conn net.Conn, value string) (int, error) {
 func sendNullBulkString(conn net.Conn) (int, error) {
 	return conn.Write([]byte("$-1\r\n"))
 }
+
+func sendInteger(conn net.Conn, value int) (int, error) {
+	response := fmt.Sprintf(":%d\r\n", value)
+
+	return conn.Write([]byte(response))
+}

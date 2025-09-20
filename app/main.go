@@ -10,9 +10,35 @@ import (
 	"time"
 )
 
-type CacheValue struct {
+type RedisValue interface {
+	Type() string
+	IsExpired() bool
+}
+
+type StringEntry struct {
 	value  string
 	expiry int64 // in ms
+}
+
+func (e *StringEntry) Type() string {
+	return "string"
+}
+
+func (e *StringEntry) IsExpired() bool {
+	return e.expiry != -1 && time.Now().UnixMilli() > e.expiry
+}
+
+type ListEntry struct {
+	value  []string
+	expiry int64 // in ms
+}
+
+func (e *ListEntry) Type() string {
+	return "list"
+}
+
+func (e *ListEntry) IsExpired() bool {
+	return e.expiry != -1 && time.Now().UnixMilli() > e.expiry
 }
 
 func main() {
@@ -26,7 +52,7 @@ func main() {
 	}
 	defer l.Close()
 
-	cache := make(map[string]CacheValue)
+	cache := make(map[string]RedisValue)
 
 	for {
 		conn, err := l.Accept()
@@ -39,7 +65,7 @@ func main() {
 	}
 }
 
-func handleRequest(conn net.Conn, cache map[string]CacheValue) {
+func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 	defer conn.Close()
 
 	for {
@@ -52,7 +78,6 @@ func handleRequest(conn net.Conn, cache map[string]CacheValue) {
 			return
 		}
 
-		fmt.Println("args:", args)
 		command := args[0]
 
 		switch command {
@@ -101,7 +126,7 @@ func handleRequest(conn net.Conn, cache map[string]CacheValue) {
 				}
 			}
 
-			cache[args[1]] = CacheValue{
+			cache[args[1]] = &StringEntry{
 				value:  args[2],
 				expiry: expiryMs,
 			}
@@ -121,30 +146,40 @@ func handleRequest(conn net.Conn, cache map[string]CacheValue) {
 			key := args[1]
 			entry, exists := cache[key]
 			// If not found, send null bulk string
-			if !exists {
-				_, err = sendNullBulkString(conn)
-				if err != nil {
-					fmt.Println("Error sending null bulk string:", err.Error())
-					os.Exit(1)
+			var err error
+			if !exists || entry.IsExpired() {
+				if exists {
+					delete(cache, key)
 				}
+				_, err = sendNullBulkString(conn)
+			} else {
+				_, err = sendBulkString(conn, entry.(*StringEntry).value)
 			}
 
-			// If expired, send null bulk string
-			now := time.Now().UnixMilli()
+			if err != nil {
+				fmt.Println("Error sending bulk string:", err.Error())
+				os.Exit(1)
+			}
 
-			if entry.expiry != -1 && entry.expiry < now {
-				delete(cache, key)
-				_, err = sendNullBulkString(conn)
-				if err != nil {
-					fmt.Println("Error sending null bulk string:", err.Error())
-					os.Exit(1)
-				}
+		case "RPUSH":
+			if len(args) < 3 {
+				fmt.Println("Expecting 'redis-cli RPUSH <list-name> <value>', got:", args)
+				os.Exit(1)
+			}
+
+			list, exists := cache[args[1]]
+			var entry *ListEntry
+			if exists {
+				entry = list.(*ListEntry)
 			} else {
-				_, err = sendBulkString(conn, entry.value)
-				if err != nil {
-					fmt.Println("Error sending bulk string:", err.Error())
-					os.Exit(1)
-				}
+				entry = &ListEntry{value: []string{}, expiry: -1}
+			}
+
+			entry.value = append(entry.value, args[2])
+			_, err = sendInteger(conn, len(entry.value))
+			if err != nil {
+				fmt.Println("Error sending integer:", err.Error())
+				os.Exit(1)
 			}
 
 		default:
