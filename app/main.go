@@ -41,6 +41,18 @@ func (e *ListEntry) IsExpired() bool {
 	return e.expiry != -1 && time.Now().UnixMilli() > e.expiry
 }
 
+type StreamEntry struct {
+	value chan map[string]string
+}
+
+func (e *StreamEntry) Type() string {
+	return "stream"
+}
+
+func (e *StreamEntry) IsExpired() bool {
+	return false
+}
+
 type BlockingItem struct {
 	listName string
 	value    string
@@ -416,6 +428,56 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 
 			if err != nil {
 				fmt.Println("Error sending simple string:", err.Error())
+				os.Exit(1)
+			}
+
+		case "XADD":
+			if len(args) < 3 {
+				fmt.Println("Expecting 'redis-cli XADD (<entry-id>) <stream-key> <key1> <value1> ...', got:", args)
+				os.Exit(1)
+			}
+
+			var entryId string
+			idx := 1
+			key := args[idx]
+			fmt.Println("key:", key)
+			idx++
+
+			if len(args)%2 != 0 {
+				entryId = args[idx]
+				idx++
+			} else {
+				entryId = "xxx" // assign epoch-counter
+			}
+			fmt.Println("entryId:", entryId)
+
+			list, exists := cache[key]
+			var entry *StreamEntry
+			if exists {
+				entry = list.(*StreamEntry)
+			} else {
+				entry = &StreamEntry{value: make(chan map[string]string)}
+				cache[key] = entry
+			}
+
+			value := make(map[string]string)
+			for idx < len(args) {
+				entryKey := args[idx]
+				idx++
+				entryValue := args[idx]
+				idx++
+
+				fmt.Println(entryKey, "->", entryValue)
+				value[entryKey] = entryValue
+			}
+
+			go func() {
+				entry.value <- value
+			}()
+
+			_, err = sendBulkString(conn, entryId)
+			if err != nil {
+				fmt.Println("Error sending bulk string:", err.Error())
 				os.Exit(1)
 			}
 
