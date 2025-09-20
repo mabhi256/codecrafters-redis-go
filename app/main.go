@@ -174,10 +174,10 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 				entry = list.(*ListEntry)
 			} else {
 				entry = &ListEntry{value: []string{}, expiry: -1}
+				cache[key] = entry
 			}
 
 			entry.value = append(entry.value, args[2:]...)
-			cache[key] = entry
 
 			_, err = sendInteger(conn, len(entry.value))
 			if err != nil {
@@ -198,12 +198,12 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 				entry = list.(*ListEntry)
 			} else {
 				entry = &ListEntry{value: []string{}, expiry: -1}
+				cache[key] = entry
 			}
 
 			for _, item := range args[2:] {
 				entry.value = append([]string{item}, entry.value...)
 			}
-			cache[key] = entry
 
 			_, err = sendInteger(conn, len(entry.value))
 			if err != nil {
@@ -276,6 +276,32 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 
 			if err != nil {
 				fmt.Println("Error sending integer:", err.Error())
+				os.Exit(1)
+			}
+
+		case "LPOP":
+			if len(args) != 2 {
+				fmt.Println("Expecting 'redis-cli LLEN <list-name>', got:", args)
+				os.Exit(1)
+			}
+			key := args[1]
+			list, exists := cache[key]
+			var entry *ListEntry
+			if exists {
+				entry = list.(*ListEntry)
+			}
+
+			var err error
+			if len(entry.value) == 0 {
+				_, err = sendNullBulkString(conn)
+			} else {
+				peek := entry.value[0]
+				entry.value = entry.value[1:]
+				_, err = sendBulkString(conn, peek)
+			}
+
+			if err != nil {
+				fmt.Println("Error sending bulk string:", err.Error())
 				os.Exit(1)
 			}
 
