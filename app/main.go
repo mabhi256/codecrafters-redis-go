@@ -399,6 +399,26 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				}
 			}
 
+		case "TYPE":
+			if len(args) != 2 {
+				fmt.Println("Expecting 'redis-cli TYPE <key>', got:", args)
+				os.Exit(1)
+			}
+			key := args[1]
+
+			entry, exists := cache[key]
+			var err error
+			if exists {
+				_, err = sendSimpleString(conn, entry.Type())
+			} else {
+				_, err = sendSimpleString(conn, "none")
+			}
+
+			if err != nil {
+				fmt.Println("Error sending simple string:", err.Error())
+				os.Exit(1)
+			}
+
 		default:
 			fmt.Println("Unknown command:", command)
 			os.Exit(1)
