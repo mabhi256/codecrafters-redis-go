@@ -18,6 +18,8 @@ func main() {
 	}
 	defer l.Close()
 
+	keyVal := make(map[string]string)
+
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -25,11 +27,11 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn)
+		go handleRequest(conn, keyVal)
 	}
 }
 
-func handleRequest(conn net.Conn) {
+func handleRequest(conn net.Conn, keyVal map[string]string) {
 	defer conn.Close()
 
 	for {
@@ -47,12 +49,56 @@ func handleRequest(conn net.Conn) {
 
 		switch command {
 		case "PING":
-			conn.Write([]byte("+PONG\r\n"))
+			_, err = sendSimpleString(conn, "PONG")
+			if err != nil {
+				fmt.Println("Error sending simple string:", err.Error())
+				os.Exit(1)
+			}
 
 		case "ECHO":
+			if len(args) != 2 {
+				fmt.Println("Expecting 'redis-cli ECHO <value>', got:", args)
+				os.Exit(1)
+			}
+
 			_, err = sendBulkString(conn, args[1])
 			if err != nil {
-				fmt.Println("Error sending data:", err.Error())
+				fmt.Println("Error sending bulk string:", err.Error())
+				os.Exit(1)
+			}
+
+		case "SET":
+			if len(args) != 3 {
+				fmt.Println("Expecting 'redis-cli SET <key> <value>', got:", args)
+				os.Exit(1)
+			}
+
+			keyVal[args[1]] = args[2]
+
+			_, err = sendSimpleString(conn, "OK")
+			if err != nil {
+				fmt.Println("Error sending simple string:", err.Error())
+				os.Exit(1)
+			}
+
+		case "GET":
+			if len(args) != 2 {
+				fmt.Println("Expecting 'redis-cli GET <key>', got:", args)
+				os.Exit(1)
+			}
+
+			value, exists := keyVal[args[1]]
+			if !exists {
+				_, err = sendNullBulkString(conn)
+				if err != nil {
+					fmt.Println("Error sending null bulk string:", err.Error())
+					os.Exit(1)
+				}
+			}
+
+			_, err = sendBulkString(conn, value)
+			if err != nil {
+				fmt.Println("Error sending bulk string:", err.Error())
 				os.Exit(1)
 			}
 

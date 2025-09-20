@@ -79,8 +79,18 @@ func receiveCommand(conn net.Conn) ([]string, error) {
 	return args, nil
 }
 
+func sendSimpleString(conn net.Conn, value string) (int, error) {
+	response := fmt.Sprintf("+%s\r\n", value)
+
+	return conn.Write([]byte(response))
+}
+
 func sendBulkString(conn net.Conn, value string) (int, error) {
 	response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
 
 	return conn.Write([]byte(response))
+}
+
+func sendNullBulkString(conn net.Conn) (int, error) {
+	return conn.Write([]byte("$-1\r\n"))
 }
