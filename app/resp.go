@@ -100,3 +100,24 @@ func sendInteger(conn net.Conn, value int) (int, error) {
 
 	return conn.Write([]byte(response))
 }
+
+func sendArray(conn net.Conn, values []string) (int, error) {
+	if len(values) == 0 {
+		return conn.Write([]byte("*0\r\n"))
+	}
+
+	response := fmt.Sprintf("*%d\r\n", len(values))
+	_, err := conn.Write([]byte(response))
+	if err != nil {
+		return 0, err
+	}
+
+	for _, value := range values {
+		_, err := sendBulkString(conn, value)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	return 0, err
+}

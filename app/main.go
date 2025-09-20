@@ -185,6 +185,42 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 				os.Exit(1)
 			}
 
+		case "LRANGE":
+			if len(args) < 4 {
+				fmt.Println("Expecting 'redis-cli LRANGE <list-name> <start> <stop>', got:", args)
+				os.Exit(1)
+			}
+			key := args[1]
+			start, err := strconv.Atoi(args[2])
+			if err != nil {
+				fmt.Println("Error parsing start value:", err.Error())
+				os.Exit(1)
+			}
+			stop, err := strconv.Atoi(args[3])
+			if err != nil {
+				fmt.Println("Error parsing stop value:", err.Error())
+				os.Exit(1)
+			}
+
+			list, exists := cache[key]
+			var entry *ListEntry
+			if exists {
+				entry = list.(*ListEntry)
+			}
+
+			if !exists || start > stop || start >= len(entry.value) {
+				_, err = sendArray(conn, []string{})
+
+			} else {
+				stop = min(len(entry.value), stop+1) // change stop to exclusive boundary
+				_, err = sendArray(conn, entry.value[start:stop])
+			}
+
+			if err != nil {
+				fmt.Println("Error sending array:", err.Error())
+				os.Exit(1)
+			}
+
 		default:
 			fmt.Println("Unknown command:", command)
 			os.Exit(1)
