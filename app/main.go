@@ -166,8 +166,9 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 				fmt.Println("Expecting 'redis-cli RPUSH <list-name> <value>', got:", args)
 				os.Exit(1)
 			}
+			key := args[1]
+			list, exists := cache[key]
 
-			list, exists := cache[args[1]]
 			var entry *ListEntry
 			if exists {
 				entry = list.(*ListEntry)
@@ -176,6 +177,8 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 			}
 
 			entry.value = append(entry.value, args[2])
+			cache[key] = entry
+
 			_, err = sendInteger(conn, len(entry.value))
 			if err != nil {
 				fmt.Println("Error sending integer:", err.Error())
