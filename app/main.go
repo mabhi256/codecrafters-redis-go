@@ -41,6 +41,11 @@ func (e *ListEntry) IsExpired() bool {
 	return e.expiry != -1 && time.Now().UnixMilli() > e.expiry
 }
 
+type BlockingItem struct {
+	listName string
+	value    string
+}
+
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	// fmt.Println("Logs from your program will appear here!")
@@ -53,6 +58,7 @@ func main() {
 	defer l.Close()
 
 	cache := make(map[string]RedisValue)
+	blocking := make(chan BlockingItem, 1)
 
 	for {
 		conn, err := l.Accept()
@@ -61,11 +67,11 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, cache)
+		go handleRequest(conn, cache, blocking)
 	}
 }
 
-func handleRequest(conn net.Conn, cache map[string]RedisValue) {
+func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan BlockingItem) {
 	defer conn.Close()
 
 	for {
@@ -177,7 +183,12 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 				cache[key] = entry
 			}
 
-			entry.value = append(entry.value, args[2:]...)
+			for _, item := range args[2:] {
+				entry.value = append(entry.value, item)
+				go func() {
+					blocking <- BlockingItem{listName: key, value: item}
+				}()
+			}
 
 			_, err = sendInteger(conn, len(entry.value))
 			if err != nil {
@@ -203,6 +214,9 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 
 			for _, item := range args[2:] {
 				entry.value = append([]string{item}, entry.value...)
+				go func() {
+					blocking <- BlockingItem{listName: key, value: item}
+				}()
 			}
 
 			_, err = sendInteger(conn, len(entry.value))
@@ -323,6 +337,64 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 			if err != nil {
 				fmt.Println("Error sending bulk string:", err.Error())
 				os.Exit(1)
+			}
+
+		case "BLPOP":
+			if len(args) != 3 {
+				fmt.Println("Expecting 'redis-cli BLPOP <list-name> <timeout>', got:", args)
+				os.Exit(1)
+			}
+			key := args[1]
+			timeout, err := strconv.ParseFloat(args[2], 64)
+			if err != nil {
+				fmt.Println("Error reading pop count:", err.Error())
+				os.Exit(1)
+			}
+
+			if timeout > 0 {
+				timer := time.After(time.Duration(timeout) * time.Second)
+
+				for {
+					select {
+					case item := <-blocking:
+						list, exists := cache[key]
+						if exists && item.listName == key {
+							entry := list.(*ListEntry)
+							peek := entry.value[0]
+							entry.value = entry.value[1:]
+							_, err = sendArray(conn, []string{key, peek})
+							if err != nil {
+								fmt.Println("Error sending BLPOP element:", err.Error())
+								os.Exit(1)
+							}
+							return
+						}
+
+					case <-timer:
+						_, err = sendNullBulkString(conn)
+						if err != nil {
+							fmt.Println("Error sending BLPOP element:", err.Error())
+							os.Exit(1)
+						}
+						return
+					}
+				}
+			} else {
+				for {
+					item := <-blocking
+					list, exists := cache[key]
+					if exists && item.listName == key {
+						entry := list.(*ListEntry)
+						peek := entry.value[0]
+						entry.value = entry.value[1:]
+						_, err = sendArray(conn, []string{key, peek})
+						if err != nil {
+							fmt.Println("Error sending BLPOP element:", err.Error())
+							os.Exit(1)
+						}
+						return
+					}
+				}
 			}
 
 		default:
