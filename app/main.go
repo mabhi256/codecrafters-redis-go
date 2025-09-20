@@ -208,6 +208,14 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 				entry = list.(*ListEntry)
 			}
 
+			if start < 0 {
+				start = max(0, len(entry.value)+start)
+			}
+			if stop < 0 {
+				stop = len(entry.value) + stop
+			}
+
+			fmt.Println("start:", start, ", stop:", stop)
 			if !exists || start > stop || start >= len(entry.value) {
 				_, err = sendArray(conn, []string{})
 
