@@ -163,7 +163,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 
 		case "RPUSH":
 			if len(args) < 3 {
-				fmt.Println("Expecting 'redis-cli RPUSH <list-name> <value>', got:", args)
+				fmt.Println("Expecting 'redis-cli RPUSH <list-name> <values>...', got:", args)
 				os.Exit(1)
 			}
 			key := args[1]
@@ -187,7 +187,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 
 		case "LPUSH":
 			if len(args) < 3 {
-				fmt.Println("Expecting 'redis-cli RPUSH <list-name> <value>', got:", args)
+				fmt.Println("Expecting 'redis-cli LPUSH <list-name> <values>...', got:", args)
 				os.Exit(1)
 			}
 			key := args[1]
@@ -252,6 +252,30 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 
 			if err != nil {
 				fmt.Println("Error sending array:", err.Error())
+				os.Exit(1)
+			}
+
+		case "LLEN":
+			if len(args) != 2 {
+				fmt.Println("Expecting 'redis-cli LLEN <list-name>', got:", args)
+				os.Exit(1)
+			}
+			key := args[1]
+			list, exists := cache[key]
+			var entry *ListEntry
+			if exists {
+				entry = list.(*ListEntry)
+			}
+
+			var err error
+			if exists {
+				_, err = sendInteger(conn, len(entry.value))
+			} else {
+				_, err = sendInteger(conn, 0)
+			}
+
+			if err != nil {
+				fmt.Println("Error sending integer:", err.Error())
 				os.Exit(1)
 			}
 
