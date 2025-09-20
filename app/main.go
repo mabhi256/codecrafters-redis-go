@@ -19,9 +19,26 @@ func main() {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
 	}
-	_, err = l.Accept()
+	conn, err := l.Accept()
 	if err != nil {
 		fmt.Println("Error accepting connection: ", err.Error())
+		os.Exit(1)
+	}
+
+	data1 := receive(conn)
+	fmt.Println("data1:", data1)
+
+	data2 := receive(conn)
+	fmt.Println("data2:", data2)
+
+	command := receive(conn)
+
+	switch command {
+	case "PING":
+		conn.Write([]byte("+PONG\r\n"))
+
+	default:
+		fmt.Println("Unknown command:", command)
 		os.Exit(1)
 	}
 }
