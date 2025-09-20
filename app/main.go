@@ -176,7 +176,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue) {
 				entry = &ListEntry{value: []string{}, expiry: -1}
 			}
 
-			entry.value = append(entry.value, args[2])
+			entry.value = append(entry.value, args[2:]...)
 			cache[key] = entry
 
 			_, err = sendInteger(conn, len(entry.value))
