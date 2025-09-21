@@ -42,9 +42,9 @@ func (e *ListEntry) IsExpired() bool {
 }
 
 type StreamEntry struct {
-	value      *RadixNode
-	smallestID string
-	largestID  string
+	value   *RadixNode
+	startID string
+	lastID  string
 }
 
 func (e *StreamEntry) Type() string {
@@ -435,25 +435,42 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 
 		case "XADD":
 			if len(args) < 3 {
-				fmt.Println("Expecting 'redis-cli XADD (<entry-id>) <stream-key> <key1> <value1> ...', got:", args)
+				fmt.Println("Expecting 'redis-cli XADD <stream-key> <entry-id> <key1> <value1> ...', got:", args)
 				os.Exit(1)
 			}
 
-			var entryId string
 			idx := 1
 			key := args[idx]
 			idx++
 
-			if len(args)%2 != 0 {
-				entryId = args[idx]
-				idx++
-			} else {
-				entryId = "xxx" // assign epoch-counter
+			entryID := args[idx]
+			idx++
+
+			// Verify the entryId is well formed: <ms>-<seq>
+			parts := strings.SplitN(entryID, "-", 2)
+
+			for i, part := range parts {
+				if len(parts) == 1 && part == "*" {
+					break
+				}
+				if i == 1 && part == "*" {
+					fmt.Println("part[1] = *")
+					break
+				}
+
+				for _, ch := range part {
+					if ch < '0' || ch > '9' {
+						_, err = sendSimpleError(conn, "ERR Invalid stream ID specified as stream command argument")
+						if err != nil {
+							fmt.Println("Error sending error:", err.Error())
+							os.Exit(1)
+						}
+					}
+				}
 			}
-			fmt.Println("entryId:", entryId)
 
 			// check if "x-y" format
-			if entryId < "0-1" {
+			if entryID == "0-0" {
 				_, err = sendSimpleError(conn, "ERR The ID specified in XADD must be greater than 0-0")
 				if err != nil {
 					fmt.Println("Error sending error:", err.Error())
@@ -466,7 +483,10 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			var entry *StreamEntry
 			if exists {
 				entry = list.(*StreamEntry)
-				if entryId <= entry.largestID {
+				// if same time part, incr seq byt 1
+				prevIDParts := strings.SplitN(entry.lastID, "-", 2)
+
+				if parts[0] < prevIDParts[0] {
 					_, err = sendSimpleError(conn, "ERR The ID specified in XADD is equal or smaller than the target stream top item")
 					if err != nil {
 						fmt.Println("Error sending error:", err.Error())
@@ -474,11 +494,40 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 					}
 					continue
 				}
+
+				if parts[0] == prevIDParts[0] {
+					if parts[1] == "*" {
+						prevSeq, err := strconv.Atoi(prevIDParts[1])
+						if err != nil {
+							fmt.Println("Error parsing entryID")
+							os.Exit(1)
+						}
+						entryID = parts[0] + "-" + strconv.Itoa(prevSeq+1)
+					} else if parts[1] <= prevIDParts[1] {
+						_, err = sendSimpleError(conn, "ERR The ID specified in XADD is equal or smaller than the target stream top item")
+						if err != nil {
+							fmt.Println("Error sending error:", err.Error())
+							os.Exit(1)
+						}
+						continue
+					}
+				}
+
+				if parts[0] > prevIDParts[0] && parts[1] == "*" {
+					entryID = parts[0] + "-0"
+				}
 			} else {
+				if parts[1] == "*" {
+					if parts[0] == "0" {
+						entryID = "0-1"
+					} else {
+						entryID = parts[0] + "-0"
+					}
+				}
 				entry = &StreamEntry{
-					value:      &RadixNode{},
-					smallestID: entryId,
-					largestID:  "",
+					value:   &RadixNode{},
+					startID: entryID,
+					lastID:  "",
 				}
 				cache[key] = entry
 			}
@@ -493,10 +542,10 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				value[entryKey] = entryValue
 			}
 
-			entry.value.Insert(entryId, value)
-			entry.largestID = entryId
+			entry.value.Insert(entryID, value)
+			entry.lastID = entryID
 
-			_, err = sendBulkString(conn, entryId)
+			_, err = sendBulkString(conn, entryID)
 			if err != nil {
 				fmt.Println("Error sending bulk string:", err.Error())
 				os.Exit(1)
