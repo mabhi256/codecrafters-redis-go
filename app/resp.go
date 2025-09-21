@@ -107,19 +107,52 @@ func sendArray(conn net.Conn, values []string) (int, error) {
 	}
 
 	response := fmt.Sprintf("*%d\r\n", len(values))
-	_, err := conn.Write([]byte(response))
+	totalBytes, err := conn.Write([]byte(response))
 	if err != nil {
 		return 0, err
 	}
 
 	for _, value := range values {
-		_, err := sendBulkString(conn, value)
+		n, err := sendBulkString(conn, value)
 		if err != nil {
 			return 0, err
 		}
+		totalBytes += n
 	}
 
-	return 0, err
+	return totalBytes, err
+}
+
+func sendAnyArray(conn net.Conn, values []any) (int, error) {
+	if len(values) == 0 {
+		return conn.Write([]byte("*0\r\n"))
+	}
+
+	response := fmt.Sprintf("*%d\r\n", len(values))
+	totalBytes, err := conn.Write([]byte(response))
+	if err != nil {
+		return 0, err
+	}
+
+	for _, value := range values {
+		var err error
+		var n int
+
+		switch value := value.(type) {
+		case string:
+			n, err = sendBulkString(conn, value)
+		case []string:
+			n, err = sendArray(conn, value)
+		case []any:
+			n, err = sendAnyArray(conn, value)
+		}
+		if err != nil {
+			return 0, err
+		}
+		totalBytes += n
+	}
+
+	return totalBytes, err
 }
 
 func sendNullArray(conn net.Conn) (int, error) {

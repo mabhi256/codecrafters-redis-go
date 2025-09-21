@@ -42,7 +42,7 @@ func (e *ListEntry) IsExpired() bool {
 }
 
 type StreamEntry struct {
-	value   *RadixNode
+	root    *RadixNode
 	startID string
 	lastID  string
 }
@@ -434,16 +434,15 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "XADD":
-			if len(args) < 5 {
+			if len(args) < 5 || len(args)%2 == 0 {
 				fmt.Println("Expecting 'redis-cli XADD <stream-key> <entry-id> <key1> <value1> ...', got:", args)
 				os.Exit(1)
 			}
 
-			key := args[1]
+			streamKey := args[1]
 			entryID := args[2]
 
-			idx := 3
-			list, exists := cache[key]
+			list, exists := cache[streamKey]
 			var entry *StreamEntry
 			if exists {
 				entry = list.(*StreamEntry)
@@ -462,34 +461,72 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			} else {
 				entryID, err = GenerateStreamID(entryID, "")
 				entry = &StreamEntry{
-					value:   &RadixNode{},
+					root:    &RadixNode{},
 					startID: entryID,
 					lastID:  "",
 				}
-				cache[key] = entry
+				cache[streamKey] = entry
 			}
 			if err != nil {
 				fmt.Println("Error generating streamID:", err.Error())
 				os.Exit(1)
 			}
 
-			value := make(map[string]string)
+			idx := 3
+			value := []string{}
 			for idx < len(args) {
-				entryKey := args[idx]
+				value = append(value, args[idx])
 				idx++
-				entryValue := args[idx]
-				idx++
-
-				value[entryKey] = entryValue
 			}
-
-			entry.value.Insert(entryID, value)
+			entry.root.Insert(entryID, value)
 			entry.lastID = entryID
 
 			_, err = sendBulkString(conn, entryID)
 			if err != nil {
 				fmt.Println("Error sending bulk string:", err.Error())
 				os.Exit(1)
+			}
+
+		case "XRANGE":
+			if len(args) != 4 {
+				fmt.Println("Expecting 'redis-cli XRANGE <stream-key> <start-id> <end-id>', got:", args)
+				os.Exit(1)
+			}
+
+			streamKey := args[1]
+			startID := args[2]
+			endID := args[3]
+
+			// If no sequence number provided for the end, change it to end+1, to cover all sequences with end ms
+			endParts := strings.SplitN(endID, "-", 2)
+			if len(endParts) != 2 {
+				endIDms, err := strconv.ParseInt(endID, 10, 64)
+				if err != nil {
+					fmt.Println("Error parsing endID:", err.Error())
+					os.Exit(1)
+				}
+				endID = fmt.Sprintf("%d", endIDms+1)
+			}
+
+			// The sequence number doesn't need to be included in the start and end IDs
+			// If not provided, XRANGE defaults to a sequence number of 0 for the start and
+			// the maximum sequence number for the end.
+			list, exists := cache[streamKey]
+			var stream *StreamEntry
+			var response []any
+			if exists {
+				stream = list.(*StreamEntry)
+				res := stream.root.RangeQuery(startID, endID)
+
+				for _, item := range res {
+					response = append(response, []any{item.ID, item.Data})
+				}
+
+				_, err = sendAnyArray(conn, response)
+				if err != nil {
+					fmt.Println("Error sending bulk string:", err.Error())
+					os.Exit(1)
+				}
 			}
 
 		default:

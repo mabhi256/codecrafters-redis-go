@@ -17,7 +17,6 @@ func (e StreamIDError) Error() string {
 }
 
 func ValidateStreamID(entryID string, lastID string) error {
-	fmt.Println("entryID:", entryID, "lastID:", lastID)
 	if entryID == "*" {
 		return nil
 	}
