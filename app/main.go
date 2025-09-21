@@ -434,102 +434,43 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "XADD":
-			if len(args) < 3 {
+			if len(args) < 5 {
 				fmt.Println("Expecting 'redis-cli XADD <stream-key> <entry-id> <key1> <value1> ...', got:", args)
 				os.Exit(1)
 			}
 
-			idx := 1
-			key := args[idx]
-			idx++
+			key := args[1]
+			entryID := args[2]
 
-			entryID := args[idx]
-			idx++
-
-			// Verify the entryId is well formed: <ms>-<seq>
-			parts := strings.SplitN(entryID, "-", 2)
-
-			for i, part := range parts {
-				if len(parts) == 1 && part == "*" {
-					break
-				}
-				if i == 1 && part == "*" {
-					fmt.Println("part[1] = *")
-					break
-				}
-
-				for _, ch := range part {
-					if ch < '0' || ch > '9' {
-						_, err = sendSimpleError(conn, "ERR Invalid stream ID specified as stream command argument")
-						if err != nil {
-							fmt.Println("Error sending error:", err.Error())
-							os.Exit(1)
-						}
-					}
-				}
-			}
-
-			// check if "x-y" format
-			if entryID == "0-0" {
-				_, err = sendSimpleError(conn, "ERR The ID specified in XADD must be greater than 0-0")
-				if err != nil {
-					fmt.Println("Error sending error:", err.Error())
-					os.Exit(1)
-				}
-				continue
-			}
-
+			idx := 3
 			list, exists := cache[key]
 			var entry *StreamEntry
 			if exists {
 				entry = list.(*StreamEntry)
-				// if same time part, incr seq byt 1
-				prevIDParts := strings.SplitN(entry.lastID, "-", 2)
 
-				if parts[0] < prevIDParts[0] {
-					_, err = sendSimpleError(conn, "ERR The ID specified in XADD is equal or smaller than the target stream top item")
-					if err != nil {
-						fmt.Println("Error sending error:", err.Error())
-						os.Exit(1)
-					}
-					continue
-				}
-
-				if parts[0] == prevIDParts[0] {
-					if parts[1] == "*" {
-						prevSeq, err := strconv.Atoi(prevIDParts[1])
-						if err != nil {
-							fmt.Println("Error parsing entryID")
-							os.Exit(1)
-						}
-						entryID = parts[0] + "-" + strconv.Itoa(prevSeq+1)
-					} else if parts[1] <= prevIDParts[1] {
-						_, err = sendSimpleError(conn, "ERR The ID specified in XADD is equal or smaller than the target stream top item")
+				if err := ValidateStreamID(entryID, entry.lastID); err != nil {
+					if streamErr, ok := err.(StreamIDError); ok {
+						_, err := sendSimpleError(conn, streamErr.message)
 						if err != nil {
 							fmt.Println("Error sending error:", err.Error())
 							os.Exit(1)
 						}
-						continue
 					}
+					continue
 				}
-
-				if parts[0] > prevIDParts[0] && parts[1] == "*" {
-					entryID = parts[0] + "-0"
-				}
+				entryID, err = GenerateStreamID(entryID, entry.lastID)
 			} else {
-				if parts[1] == "*" {
-					if parts[0] == "0" {
-						entryID = "0-1"
-					} else {
-						entryID = parts[0] + "-0"
-					}
-				}
+				entryID, err = GenerateStreamID(entryID, "")
 				entry = &StreamEntry{
 					value:   &RadixNode{},
 					startID: entryID,
 					lastID:  "",
 				}
 				cache[key] = entry
+			}
+			if err != nil {
+				fmt.Println("Error generating streamID:", err.Error())
+				os.Exit(1)
 			}
 
 			value := make(map[string]string)
