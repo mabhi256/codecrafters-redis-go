@@ -365,39 +365,14 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				os.Exit(1)
 			}
 
+			var timer <-chan time.Time
 			if timeout > 0 {
-				// fmt.Println("timeout:", timeout)
+				timer = time.After(time.Duration(timeout*1000) * time.Millisecond)
+			}
 
-				timer := time.After(time.Duration(timeout*1000) * time.Millisecond)
-
-				for {
-					select {
-					case item := <-blocking:
-						list, exists := cache[key]
-						if exists && item.key == key {
-							entry := list.(*ListEntry)
-							peek := entry.value[0]
-							entry.value = entry.value[1:]
-							_, err = sendArray(conn, []string{key, peek})
-							if err != nil {
-								fmt.Println("Error sending BLPOP element:", err.Error())
-								os.Exit(1)
-							}
-							return
-						}
-
-					case <-timer:
-						_, err = sendNullArray(conn)
-						if err != nil {
-							fmt.Println("Error sending Null array:", err.Error())
-							os.Exit(1)
-						}
-						return
-					}
-				}
-			} else {
-				for {
-					item := <-blocking
+			for {
+				select {
+				case item := <-blocking:
 					list, exists := cache[key]
 					if exists && item.key == key {
 						entry := list.(*ListEntry)
@@ -410,6 +385,14 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 						}
 						return
 					}
+
+				case <-timer:
+					_, err = sendNullArray(conn)
+					if err != nil {
+						fmt.Println("Error sending Null array:", err.Error())
+						os.Exit(1)
+					}
+					return
 				}
 			}
 
@@ -565,7 +548,12 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			entryIDs := args[streamNameIdx+streamCount:]
 
 			if isBlocking {
-				timer := time.After(time.Duration(blockMS) * time.Millisecond)
+				var timer <-chan time.Time
+
+				if blockMS > 0 {
+					timer = time.After(time.Duration(blockMS) * time.Millisecond)
+				}
+
 				for {
 					select {
 					case item := <-blocking:
