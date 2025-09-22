@@ -538,39 +538,43 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "XREAD":
-			if len(args) != 4 {
-				fmt.Println("Expecting 'redis-cli XREAD streams <stream-key> <entry-id>', got:", args)
+			if len(args) < 4 || len(args)%2 != 0 {
+				fmt.Println("Expecting 'redis-cli XREAD streams <stream-key1> <stream-key2>... <entry-id1> <entry-id2>', got:", args)
 				os.Exit(1)
 			}
 
-			streamKey := args[2]
-			entryID := args[3]
+			streamCount := (len(args) - 2) / 2
+			streamKeys := args[2 : 2+streamCount]
+			entryIDs := args[2+streamCount:]
 
-			parts := strings.SplitN(entryID, "-", 2)
-			seq, err := strconv.Atoi(parts[1])
-			if err != nil {
-				fmt.Println("Error parsing entryID sequence:", err.Error())
-				os.Exit(1)
-			}
-			startID := fmt.Sprintf("%s-%d", parts[0], seq+1)
-
-			list, exists := cache[streamKey]
-			var stream *StreamEntry
 			var response []any
-			if exists {
-				stream = list.(*StreamEntry)
-
-				res := stream.root.RangeQuery(startID, stream.lastID)
-
-				for _, item := range res {
-					response = append(response, []any{item.ID, item.Data})
-				}
-
-				_, err = sendAnyArray(conn, []any{[]any{streamKey, response}})
+			for i, streamKey := range streamKeys {
+				parts := strings.SplitN(entryIDs[i], "-", 2)
+				seq, err := strconv.Atoi(parts[1])
 				if err != nil {
-					fmt.Println("Error sending bulk string:", err.Error())
+					fmt.Println("Error parsing entryID sequence:", err.Error())
 					os.Exit(1)
 				}
+				startID := fmt.Sprintf("%s-%d", parts[0], seq+1)
+
+				list, exists := cache[streamKey]
+				var entries []any
+				if exists {
+					stream := list.(*StreamEntry)
+
+					res := stream.root.RangeQuery(startID, stream.lastID)
+
+					for _, item := range res {
+						entries = append(entries, []any{item.ID, item.Data})
+					}
+				}
+				response = append(response, []any{streamKey, entries})
+			}
+
+			_, err = sendAnyArray(conn, response)
+			if err != nil {
+				fmt.Println("Error sending bulk string:", err.Error())
+				os.Exit(1)
 			}
 
 		default:
