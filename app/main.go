@@ -537,6 +537,42 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				}
 			}
 
+		case "XREAD":
+			if len(args) != 4 {
+				fmt.Println("Expecting 'redis-cli XREAD streams <stream-key> <entry-id>', got:", args)
+				os.Exit(1)
+			}
+
+			streamKey := args[2]
+			entryID := args[3]
+
+			parts := strings.SplitN(entryID, "-", 2)
+			seq, err := strconv.Atoi(parts[1])
+			if err != nil {
+				fmt.Println("Error parsing entryID sequence:", err.Error())
+				os.Exit(1)
+			}
+			startID := fmt.Sprintf("%s-%d", parts[0], seq+1)
+
+			list, exists := cache[streamKey]
+			var stream *StreamEntry
+			var response []any
+			if exists {
+				stream = list.(*StreamEntry)
+
+				res := stream.root.RangeQuery(startID, stream.lastID)
+
+				for _, item := range res {
+					response = append(response, []any{item.ID, item.Data})
+				}
+
+				_, err = sendAnyArray(conn, []any{[]any{streamKey, response}})
+				if err != nil {
+					fmt.Println("Error sending bulk string:", err.Error())
+					os.Exit(1)
+				}
+			}
+
 		default:
 			fmt.Println("Unknown command:", command)
 			os.Exit(1)
