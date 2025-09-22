@@ -499,7 +499,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 
 			// If no sequence number provided for the end, change it to end+1, to cover all sequences with end ms
 			endParts := strings.SplitN(endID, "-", 2)
-			if len(endParts) != 2 {
+			if endID != "+" && len(endParts) != 2 {
 				endIDms, err := strconv.ParseInt(endID, 10, 64)
 				if err != nil {
 					fmt.Println("Error parsing endID:", err.Error())
@@ -516,6 +516,11 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			var response []any
 			if exists {
 				stream = list.(*StreamEntry)
+
+				if startID == "-" {
+					startID = stream.startID
+				}
+
 				res := stream.root.RangeQuery(startID, endID)
 
 				for _, item := range res {
