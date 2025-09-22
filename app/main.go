@@ -520,6 +520,9 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				if startID == "-" {
 					startID = stream.startID
 				}
+				if endID == "+" {
+					endID = stream.lastID
+				}
 
 				res := stream.root.RangeQuery(startID, endID)
 
