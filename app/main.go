@@ -138,6 +138,11 @@ func validateCommand(args []string) error {
 		if len(args) < 4 || len(args)%2 != 0 {
 			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
 		}
+
+	case "DISCARD":
+		if len(args) != 1 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
 	}
 
 	return nil
@@ -755,6 +760,25 @@ func execute(args []string, conn net.Conn,
 			execute(task, conn, cache, blocking, txnQueue, execAbortQueue)
 		}
 
+	case "DISCARD":
+		_, exists := txnQueue[connID]
+
+		if !exists {
+			_, err = sendSimpleError(conn, "ERR DISCARD without MULTI")
+			if err != nil {
+				fmt.Println("Error sending simple error:", err.Error())
+				os.Exit(1)
+			}
+			return
+		}
+		delete(txnQueue, connID)
+
+		_, err = sendSimpleString(conn, "OK")
+		if err != nil {
+			fmt.Println("Error sending simple string:", err.Error())
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
@@ -819,7 +843,7 @@ func handleRequest(conn net.Conn,
 		command := args[0]
 
 		_, exists := txnQueue[connID]
-		if exists && command != "EXEC" {
+		if exists && command != "EXEC" && command != "DISCARD" {
 			txnQueue[connID] = append(txnQueue[connID], args)
 			_, err = sendSimpleString(conn, "QUEUED")
 			if err != nil {
