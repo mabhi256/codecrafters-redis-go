@@ -547,6 +547,54 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			streamKeys := args[streamNameIdx : streamNameIdx+streamCount]
 			entryIDs := args[streamNameIdx+streamCount:]
 
+			// Return immediately if any stream has data, else wait till timeout
+			found := false
+			var response []any
+			startIDs := make([]string, streamCount)
+
+			for i, streamKey := range streamKeys {
+				var entries []any
+				list, exists := cache[streamKey]
+				if exists {
+					stream := list.(*StreamEntry)
+
+					if entryIDs[i] == "$" {
+						entryIDs[i] = stream.lastID
+					}
+					parts := strings.SplitN(entryIDs[i], "-", 2)
+
+					seq, err := strconv.Atoi(parts[1])
+					if err != nil {
+						fmt.Println("Error parsing entryID sequence:", err.Error())
+						os.Exit(1)
+					}
+					startIDs[i] = fmt.Sprintf("%s-%d", parts[0], seq+1)
+
+					if stream.lastID >= startIDs[i] {
+						fmt.Println("Querying:", startIDs[i], "to", stream.lastID)
+						res := stream.root.RangeQuery(startIDs[i], stream.lastID)
+
+						for _, item := range res {
+							entries = append(entries, []any{item.ID, item.Data})
+						}
+
+						found = true
+					}
+				}
+				response = append(response, []any{streamKey, entries})
+			}
+
+			if found {
+				fmt.Println("Found")
+				_, err = sendAnyArray(conn, response)
+				if err != nil {
+					fmt.Println("Error sending bulk string:", err.Error())
+					os.Exit(1)
+				}
+				continue
+			}
+
+			fmt.Println("isBlocking:", isBlocking)
 			if isBlocking {
 				var timer <-chan time.Time
 
@@ -554,30 +602,23 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 					timer = time.After(time.Duration(blockMS) * time.Millisecond)
 				}
 
+			blockingLoop:
 				for {
 					select {
 					case item := <-blocking:
 						found := false
-						var response []any
+						var blockingResponse []any
 
 						for i, streamKey := range streamKeys {
-
 							var entries []any
 							list, exists := cache[streamKey]
-							if exists && item.key == streamKey {
-								parts := strings.SplitN(entryIDs[i], "-", 2)
-								seq, err := strconv.Atoi(parts[1])
-								if err != nil {
-									fmt.Println("Error parsing entryID sequence:", err.Error())
-									os.Exit(1)
-								}
-								startID := fmt.Sprintf("%s-%d", parts[0], seq+1)
 
+							if exists && item.key == streamKey {
 								stream := list.(*StreamEntry)
 
-								if stream.lastID >= startID {
-									fmt.Println("Querying:", startID, "to", stream.lastID)
-									res := stream.root.RangeQuery(startID, stream.lastID)
+								if stream.lastID >= startIDs[i] {
+									fmt.Println("Querying:", startIDs[i], "to", stream.lastID)
+									res := stream.root.RangeQuery(startIDs[i], stream.lastID)
 
 									for _, item := range res {
 										entries = append(entries, []any{item.ID, item.Data})
@@ -586,15 +627,16 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 									found = true
 								}
 							}
-							response = append(response, []any{streamKey, entries})
+							blockingResponse = append(blockingResponse, []any{streamKey, entries})
 						}
 
 						if found {
-							_, err = sendAnyArray(conn, response)
+							_, err = sendAnyArray(conn, blockingResponse)
 							if err != nil {
 								fmt.Println("Error sending bulk string:", err.Error())
 								os.Exit(1)
 							}
+							break blockingLoop
 						}
 
 					case <-timer:
@@ -603,38 +645,8 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 							fmt.Println("Error sending Null Array:", err.Error())
 							os.Exit(1)
 						}
-						return
+						break blockingLoop
 					}
-				}
-			} else {
-				var response []any
-				for i, streamKey := range streamKeys {
-					parts := strings.SplitN(entryIDs[i], "-", 2)
-					seq, err := strconv.Atoi(parts[1])
-					if err != nil {
-						fmt.Println("Error parsing entryID sequence:", err.Error())
-						os.Exit(1)
-					}
-					startID := fmt.Sprintf("%s-%d", parts[0], seq+1)
-
-					var entries []any
-					list, exists := cache[streamKey]
-					if exists {
-						stream := list.(*StreamEntry)
-
-						res := stream.root.RangeQuery(startID, stream.lastID)
-
-						for _, item := range res {
-							entries = append(entries, []any{item.ID, item.Data})
-						}
-					}
-					response = append(response, []any{streamKey, entries})
-				}
-
-				_, err = sendAnyArray(conn, response)
-				if err != nil {
-					fmt.Println("Error sending bulk string:", err.Error())
-					os.Exit(1)
 				}
 			}
 
