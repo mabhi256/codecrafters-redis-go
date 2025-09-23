@@ -181,6 +181,35 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				os.Exit(1)
 			}
 
+		case "INCR":
+			if len(args) != 2 {
+				fmt.Println("Expecting 'redis-cli INCR <key>', got:", args)
+				os.Exit(1)
+			}
+
+			key := args[1]
+			entry, exists := cache[key]
+
+			if !exists || entry.IsExpired() {
+				// todo
+			}
+
+			entryStr := entry.(*StringEntry)
+			entryInt, err := strconv.Atoi(entryStr.value)
+			if err != nil {
+				// todo
+			}
+			entryInt++
+			cache[key] = &StringEntry{
+				value:  strconv.Itoa(entryInt + 1),
+				expiry: entryStr.expiry,
+			}
+			_, err = sendInteger(conn, entryInt)
+			if err != nil {
+				fmt.Println("Error sending integer:", err.Error())
+				os.Exit(1)
+			}
+
 		case "RPUSH":
 			if len(args) < 3 {
 				fmt.Println("Expecting 'redis-cli RPUSH <list-name> <values>...', got:", args)
@@ -594,7 +623,6 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				continue
 			}
 
-			fmt.Println("isBlocking:", isBlocking)
 			if isBlocking {
 				var timer <-chan time.Time
 
