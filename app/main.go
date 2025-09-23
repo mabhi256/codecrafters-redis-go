@@ -167,10 +167,10 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			entry, exists := cache[key]
 			// If not found, send null bulk string
 			var err error
-			if !exists || entry.IsExpired() {
-				if exists {
-					delete(cache, key)
-				}
+			if !exists {
+				_, err = sendNullBulkString(conn)
+			} else if entry.IsExpired() {
+				delete(cache, key)
 				_, err = sendNullBulkString(conn)
 			} else {
 				_, err = sendBulkString(conn, entry.(*StringEntry).value)
@@ -190,21 +190,33 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			key := args[1]
 			entry, exists := cache[key]
 
-			if !exists || entry.IsExpired() {
-				// todo
+			var err error
+			if !exists {
+				cache[key] = &StringEntry{
+					value:  "1",
+					expiry: -1,
+				}
+				_, err = sendInteger(conn, 1)
+			} else if entry.IsExpired() {
+				delete(cache, key)
+				cache[key] = &StringEntry{
+					value:  "1",
+					expiry: -1,
+				}
+				_, err = sendInteger(conn, 1)
+			} else {
+				entryStr := entry.(*StringEntry)
+				entryInt, _ := strconv.Atoi(entryStr.value)
+				// if err != nil {
+				// 	// todo
+				// }
+				entryInt++
+				cache[key] = &StringEntry{
+					value:  strconv.Itoa(entryInt),
+					expiry: entryStr.expiry,
+				}
+				_, err = sendInteger(conn, entryInt)
 			}
-
-			entryStr := entry.(*StringEntry)
-			entryInt, err := strconv.Atoi(entryStr.value)
-			if err != nil {
-				// todo
-			}
-			entryInt++
-			cache[key] = &StringEntry{
-				value:  strconv.Itoa(entryInt + 1),
-				expiry: entryStr.expiry,
-			}
-			_, err = sendInteger(conn, entryInt)
 			if err != nil {
 				fmt.Println("Error sending integer:", err.Error())
 				os.Exit(1)
