@@ -73,6 +73,7 @@ func main() {
 
 	cache := make(map[string]RedisValue)
 	blocking := make(chan BlockingItem, 1)
+	txnQueue := make(map[string][][]string) // connID -> array of args
 
 	for {
 		conn, err := l.Accept()
@@ -81,12 +82,15 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, cache, blocking)
+		go handleRequest(conn, cache, blocking, txnQueue)
 	}
 }
 
-func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan BlockingItem) {
+func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan BlockingItem, txnQueue map[string][][]string) {
 	defer conn.Close()
+
+	connID := fmt.Sprintf("%p", conn)
+	defer delete(txnQueue, connID)
 
 	for {
 		args, err := receiveCommand(conn)
@@ -693,6 +697,14 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 						break blockingLoop
 					}
 				}
+			}
+
+		case "MULTI":
+			txnQueue[connID] = [][]string{}
+			_, err = sendSimpleString(conn, "OK")
+			if err != nil {
+				fmt.Println("Error sending simple string:", err.Error())
+				os.Exit(1)
 			}
 
 		default:
