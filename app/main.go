@@ -707,9 +707,36 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				os.Exit(1)
 			}
 
+		case "EXEC":
+			tasks, exists := txnQueue[connID]
+
+			if !exists {
+				_, err = sendSimpleError(conn, "ERR EXEC without MULTI")
+				if err != nil {
+					fmt.Println("Error sending simple error:", err.Error())
+					os.Exit(1)
+				}
+				continue
+			}
+
+			results := []any{}
+			for i, task := range tasks {
+				results[i] = execute(task)
+			}
+
+			_, err := sendAnyArray(conn, results)
+			if err != nil {
+				fmt.Println("Error sending any array:", err.Error())
+				os.Exit(1)
+			}
+
 		default:
 			fmt.Println("Unknown command:", command)
 			os.Exit(1)
 		}
 	}
+}
+
+func execute(args []string) any {
+	return ""
 }
