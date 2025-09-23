@@ -90,7 +90,6 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 	defer conn.Close()
 
 	connID := fmt.Sprintf("%p", conn)
-	defer delete(txnQueue, connID)
 
 	for {
 		args, err := receiveCommand(conn)
@@ -718,6 +717,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				}
 				continue
 			}
+			delete(txnQueue, connID)
 
 			results := []any{}
 			for i, task := range tasks {
