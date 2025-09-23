@@ -206,10 +206,15 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 				_, err = sendInteger(conn, 1)
 			} else {
 				entryStr := entry.(*StringEntry)
-				entryInt, _ := strconv.Atoi(entryStr.value)
-				// if err != nil {
-				// 	// todo
-				// }
+				entryInt, err2 := strconv.Atoi(entryStr.value)
+				if err2 != nil {
+					_, err = sendSimpleError(conn, "ERR value is not an integer or out of range")
+					if err != nil {
+						fmt.Println("Error sending error:", err.Error())
+						os.Exit(1)
+					}
+					continue
+				}
 				entryInt++
 				cache[key] = &StringEntry{
 					value:  strconv.Itoa(entryInt),
