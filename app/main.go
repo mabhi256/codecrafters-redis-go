@@ -60,6 +60,93 @@ type BlockingItem struct {
 	// value any
 }
 
+func validateCommand(args []string) error {
+	command := args[0]
+
+	switch command {
+	case "ECHO":
+		if len(args) != 2 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "SET":
+		if len(args) < 3 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+		if len(args) == 5 {
+			if strings.ToUpper(args[3]) != "EX" && strings.ToUpper(args[3]) != "PX" {
+				return fmt.Errorf("ERR syntax error")
+			}
+		}
+
+	case "GET":
+		if len(args) != 2 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "INCR":
+		if len(args) != 2 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "RPUSH":
+		if len(args) < 3 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "LPUSH":
+		if len(args) < 3 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "LRANGE":
+		if len(args) < 4 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "LLEN":
+		if len(args) != 2 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "LPOP":
+		if len(args) < 2 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "BLPOP":
+		if len(args) != 3 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "TYPE":
+		if len(args) != 2 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "XADD":
+		if len(args) < 5 || len(args)%2 == 0 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "XRANGE":
+		if len(args) != 4 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "XREAD":
+		if len(args) < 4 || len(args)%2 != 0 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+	}
+
+	return nil
+}
+
+func execute(args []string) any {
+	return ""
+}
+
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	// fmt.Println("Logs from your program will appear here!")
@@ -74,6 +161,7 @@ func main() {
 	cache := make(map[string]RedisValue)
 	blocking := make(chan BlockingItem, 1)
 	txnQueue := make(map[string][][]string) // connID -> array of args
+	execAbortQueue := make(map[string]bool)
 
 	for {
 		conn, err := l.Accept()
@@ -82,11 +170,14 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, cache, blocking, txnQueue)
+		go handleRequest(conn, cache, blocking, txnQueue, execAbortQueue)
 	}
 }
 
-func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan BlockingItem, txnQueue map[string][][]string) {
+func handleRequest(conn net.Conn,
+	cache map[string]RedisValue, blocking chan BlockingItem,
+	txnQueue map[string][][]string, execAbortQueue map[string]bool,
+) {
 	defer conn.Close()
 
 	connID := fmt.Sprintf("%p", conn)
@@ -101,7 +192,28 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			return
 		}
 
+		err = validateCommand(args)
+		if err != nil {
+			execAbortQueue[connID] = true
+			_, err = sendSimpleError(conn, err.Error())
+			if err != nil {
+				fmt.Println("Error sending error:", err.Error())
+				os.Exit(1)
+			}
+		}
+
 		command := args[0]
+
+		_, exists := txnQueue[connID]
+		if exists && command != "EXEC" {
+			txnQueue[connID] = append(txnQueue[connID], args)
+			_, err = sendSimpleString(conn, "QUEUED")
+			if err != nil {
+				fmt.Println("Error sending simple string:", err.Error())
+				os.Exit(1)
+			}
+			continue
+		}
 
 		switch command {
 		case "PING":
@@ -112,11 +224,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "ECHO":
-			if len(args) != 2 {
-				fmt.Println("Expecting 'redis-cli ECHO <value>', got:", args)
-				os.Exit(1)
-			}
-
+			// ECHO <value>
 			_, err = sendBulkString(conn, args[1])
 			if err != nil {
 				fmt.Println("Error sending bulk string:", err.Error())
@@ -124,25 +232,21 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "SET":
-			if len(args) < 3 {
-				fmt.Println("Expecting 'redis-cli SET <key> <value>', got:", args)
-				os.Exit(1)
-			}
-
+			// SET <key> <value> (EX/PX <timeout>)
 			expiryMs := int64(-1)
 			if len(args) == 5 {
 				switch strings.ToUpper(args[3]) {
 				case "EX":
 					expiry, err := strconv.Atoi(args[4])
 					if err != nil {
-						fmt.Println("Expecting 'redis-cli SET <key> <value> EX <seconds>', got:", args)
+						fmt.Println("Expecting 'SET <key> <value> EX <seconds>', got:", args)
 						os.Exit(1)
 					}
 					expiryMs = time.Now().UnixMilli() + int64(expiry)*1000
 				case "PX":
 					expiry, err := strconv.Atoi(args[4])
 					if err != nil {
-						fmt.Println("Expecting 'redis-cli SET <key> <value> PX <millis>', got:", args)
+						fmt.Println("Expecting 'SET <key> <value> PX <millis>', got:", args)
 						os.Exit(1)
 					}
 					expiryMs = time.Now().UnixMilli() + int64(expiry)
@@ -161,11 +265,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "GET":
-			if len(args) != 2 {
-				fmt.Println("Expecting 'redis-cli GET <key>', got:", args)
-				os.Exit(1)
-			}
-
+			// GET <key>
 			key := args[1]
 			entry, exists := cache[key]
 			// If not found, send null bulk string
@@ -185,11 +285,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "INCR":
-			if len(args) != 2 {
-				fmt.Println("Expecting 'redis-cli INCR <key>', got:", args)
-				os.Exit(1)
-			}
-
+			// INCR <key>
 			key := args[1]
 			entry, exists := cache[key]
 
@@ -231,10 +327,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "RPUSH":
-			if len(args) < 3 {
-				fmt.Println("Expecting 'redis-cli RPUSH <list-name> <values>...', got:", args)
-				os.Exit(1)
-			}
+			// RPUSH <list-name> <values>...
 			key := args[1]
 			list, exists := cache[key]
 
@@ -260,10 +353,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "LPUSH":
-			if len(args) < 3 {
-				fmt.Println("Expecting 'redis-cli LPUSH <list-name> <values>...', got:", args)
-				os.Exit(1)
-			}
+			// LPUSH <list-name> <values>...
 			key := args[1]
 			list, exists := cache[key]
 
@@ -289,10 +379,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "LRANGE":
-			if len(args) < 4 {
-				fmt.Println("Expecting 'redis-cli LRANGE <list-name> <start> <stop>', got:", args)
-				os.Exit(1)
-			}
+			// LRANGE <list-name> <start> <stop>
 			key := args[1]
 			start, err := strconv.Atoi(args[2])
 			if err != nil {
@@ -333,10 +420,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "LLEN":
-			if len(args) != 2 {
-				fmt.Println("Expecting 'redis-cli LLEN <list-name>', got:", args)
-				os.Exit(1)
-			}
+			// LLEN <list-name>
 			key := args[1]
 			list, exists := cache[key]
 			var entry *ListEntry
@@ -357,10 +441,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "LPOP":
-			if len(args) < 2 {
-				fmt.Println("Expecting 'redis-cli LPOP <list-name> (<pop-count>)', got:", args)
-				os.Exit(1)
-			}
+			// LPOP <list-name> (<pop-count>)
 			key := args[1]
 			count := 1
 			if len(args) == 3 {
@@ -403,10 +484,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "BLPOP":
-			if len(args) != 3 {
-				fmt.Println("Expecting 'redis-cli BLPOP <list-name> <timeout>', got:", args)
-				os.Exit(1)
-			}
+			// BLPOP <list-name> <timeout>
 			key := args[1]
 			timeout, err := strconv.ParseFloat(args[2], 64)
 			if err != nil {
@@ -446,10 +524,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "TYPE":
-			if len(args) != 2 {
-				fmt.Println("Expecting 'redis-cli TYPE <key>', got:", args)
-				os.Exit(1)
-			}
+			// TYPE <key>
 			key := args[1]
 
 			entry, exists := cache[key]
@@ -466,11 +541,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "XADD":
-			if len(args) < 5 || len(args)%2 == 0 {
-				fmt.Println("Expecting 'redis-cli XADD <stream-key> <entry-id> <key1> <value1> ...', got:", args)
-				os.Exit(1)
-			}
-
+			// XADD <stream-key> <entry-id> <key1> <value1> ...
 			streamKey := args[1]
 			entryID := args[2]
 
@@ -525,11 +596,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "XRANGE":
-			if len(args) != 4 {
-				fmt.Println("Expecting 'redis-cli XRANGE <stream-key> <start-id> <end-id>', got:", args)
-				os.Exit(1)
-			}
-
+			// XRANGE <stream-key> <start-id> <end-id>
 			streamKey := args[1]
 			startID := args[2]
 			endID := args[3]
@@ -575,11 +642,7 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 
 		case "XREAD":
-			if len(args) < 4 || len(args)%2 != 0 {
-				fmt.Println("Expecting 'redis-cli XREAD (block <block-ms>) streams <stream-key1> <stream-key2>... <entry-id1> <entry-id2>', got:", args)
-				os.Exit(1)
-			}
-
+			// XREAD (block <block-ms>) streams <stream-key1> <stream-key2>... <entry-id1> <entry-id2>
 			isBlocking := args[1] == "block"
 			blockMS := -1
 			streamNameIdx := 2
@@ -719,6 +782,16 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			}
 			delete(txnQueue, connID)
 
+			if execAbortQueue[connID] {
+				delete(execAbortQueue, connID)
+				_, err = sendSimpleError(conn, "EXECABORT Transaction discarded because of previous errors")
+				if err != nil {
+					fmt.Println("Error sending simple error:", err.Error())
+					os.Exit(1)
+				}
+				continue
+			}
+
 			results := []any{}
 			for i, task := range tasks {
 				results[i] = execute(task)
@@ -735,8 +808,4 @@ func handleRequest(conn net.Conn, cache map[string]RedisValue, blocking chan Blo
 			os.Exit(1)
 		}
 	}
-}
-
-func execute(args []string) any {
-	return ""
 }
