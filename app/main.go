@@ -662,22 +662,22 @@ func main() {
 	var l net.Listener
 	var err error
 
-	redisServer := RedisServer{
+	server := RedisServer{
 		host: "0.0.0.0:6379",
 		role: "master",
 	}
 
-	redisServer.replID, err = GenerateReplID()
+	server.replID, err = GenerateReplID()
 	if err != nil {
 		fmt.Println("Failed to generate replication ID")
 		os.Exit(1)
 	}
 
 	if len(os.Args) >= 3 && os.Args[1] == "--port" {
-		redisServer.host = "0.0.0.0:" + os.Args[2]
+		server.host = "0.0.0.0:" + os.Args[2]
 	}
 
-	l, err = net.Listen("tcp", redisServer.host)
+	l, err = net.Listen("tcp", server.host)
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
@@ -689,9 +689,11 @@ func main() {
 		if parts[0] == "localhost" {
 			parts[0] = "0.0.0.0"
 		}
-		redisServer.master = parts[0] + ":" + parts[1]
+		server.master = parts[0] + ":" + parts[1]
 
-		redisServer.role = "slave"
+		server.role = "slave"
+
+		server.handshake()
 	}
 
 	cache := make(map[string]RedisValue)
@@ -706,7 +708,7 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, redisServer, cache, blocking, txnQueue, execAbortQueue)
+		go handleRequest(conn, server, cache, blocking, txnQueue, execAbortQueue)
 	}
 }
 
