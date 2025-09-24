@@ -779,6 +779,16 @@ func execute(args []string, conn net.Conn,
 			os.Exit(1)
 		}
 
+	case "INFO":
+		// INFO replication
+		if args[1] == "replication" {
+			_, err = sendBulkString(conn, "role:master")
+			if err != nil {
+				fmt.Println("Error sending bulk string:", err.Error())
+				os.Exit(1)
+			}
+		}
+
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
