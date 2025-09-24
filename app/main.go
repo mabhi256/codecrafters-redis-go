@@ -642,6 +642,12 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		// REPLCONF capa psync2
 		return encodeSimpleString("OK")
 
+	case "PSYNC":
+		if server.role == "master" {
+			response := fmt.Sprintf("FULLRESYNC %s %d", server.replID, server.replOffset)
+			return encodeSimpleString(response)
+		}
+
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
