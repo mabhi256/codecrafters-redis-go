@@ -148,7 +148,7 @@ func validateCommand(args []string) error {
 	return nil
 }
 
-func execute(args []string, conn net.Conn,
+func execute(args []string, conn net.Conn, master string,
 	cache map[string]RedisValue, blocking chan BlockingItem,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 ) {
@@ -543,7 +543,6 @@ func execute(args []string, conn net.Conn,
 
 		go func() {
 			blocking <- BlockingItem{key: streamKey}
-			fmt.Println("Sending to channel:", streamKey, ", entryID:", entryID)
 		}()
 
 		_, err = sendBulkString(conn, entryID)
@@ -640,7 +639,6 @@ func execute(args []string, conn net.Conn,
 				startIDs[i] = fmt.Sprintf("%s-%d", parts[0], seq+1)
 
 				if stream.lastID >= startIDs[i] {
-					fmt.Println("Querying:", startIDs[i], "to", stream.lastID)
 					res := stream.root.RangeQuery(startIDs[i], stream.lastID)
 
 					for _, item := range res {
@@ -654,7 +652,6 @@ func execute(args []string, conn net.Conn,
 		}
 
 		if found {
-			fmt.Println("Found")
 			_, err = sendAnyArray(conn, response)
 			if err != nil {
 				fmt.Println("Error sending bulk string:", err.Error())
@@ -685,7 +682,6 @@ func execute(args []string, conn net.Conn,
 							stream := list.(*StreamEntry)
 
 							if stream.lastID >= startIDs[i] {
-								fmt.Println("Querying:", startIDs[i], "to", stream.lastID)
 								res := stream.root.RangeQuery(startIDs[i], stream.lastID)
 
 								for _, item := range res {
@@ -757,7 +753,7 @@ func execute(args []string, conn net.Conn,
 		}
 
 		for _, task := range tasks {
-			execute(task, conn, cache, blocking, txnQueue, execAbortQueue)
+			execute(task, conn, master, cache, blocking, txnQueue, execAbortQueue)
 		}
 
 	case "DISCARD":
@@ -782,7 +778,11 @@ func execute(args []string, conn net.Conn,
 	case "INFO":
 		// INFO replication
 		if args[1] == "replication" {
-			_, err = sendBulkString(conn, "role:master")
+			if master == "" {
+				_, err = sendBulkString(conn, "role:master")
+			} else {
+				_, err = sendBulkString(conn, "role:slave")
+			}
 			if err != nil {
 				fmt.Println("Error sending bulk string:", err.Error())
 				os.Exit(1)
@@ -801,8 +801,9 @@ func main() {
 
 	var l net.Listener
 	var err error
+	var master string
 
-	if len(os.Args) == 3 && os.Args[1] == "--port" {
+	if len(os.Args) >= 3 && os.Args[1] == "--port" {
 		l, err = net.Listen("tcp", "0.0.0.0:"+os.Args[2])
 	} else {
 		l, err = net.Listen("tcp", "0.0.0.0:6379")
@@ -812,6 +813,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer l.Close()
+
+	if len(os.Args) == 5 && os.Args[3] == "--replicaof" {
+		master = strings.ReplaceAll(os.Args[4], "localhost", "0.0.0.0")
+		master = strings.ReplaceAll(master, " ", ":")
+	}
 
 	cache := make(map[string]RedisValue)
 	blocking := make(chan BlockingItem, 1)
@@ -825,11 +831,11 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, cache, blocking, txnQueue, execAbortQueue)
+		go handleRequest(conn, master, cache, blocking, txnQueue, execAbortQueue)
 	}
 }
 
-func handleRequest(conn net.Conn,
+func handleRequest(conn net.Conn, master string,
 	cache map[string]RedisValue, blocking chan BlockingItem,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 ) {
@@ -870,6 +876,6 @@ func handleRequest(conn net.Conn,
 			continue
 		}
 
-		execute(args, conn, cache, blocking, txnQueue, execAbortQueue)
+		execute(args, conn, master, cache, blocking, txnQueue, execAbortQueue)
 	}
 }
