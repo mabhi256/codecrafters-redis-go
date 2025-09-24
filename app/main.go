@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"io"
 	"net"
@@ -9,6 +10,14 @@ import (
 	"strings"
 	"time"
 )
+
+type RedisServer struct {
+	host       string
+	role       string
+	master     string
+	replID     string
+	replOffset int
+}
 
 type RedisValue interface {
 	Type() string
@@ -148,7 +157,7 @@ func validateCommand(args []string) error {
 	return nil
 }
 
-func execute(args []string, conn net.Conn, master string,
+func execute(args []string, conn net.Conn, server RedisServer,
 	cache map[string]RedisValue, blocking chan BlockingItem,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 ) {
@@ -753,7 +762,7 @@ func execute(args []string, conn net.Conn, master string,
 		}
 
 		for _, task := range tasks {
-			execute(task, conn, master, cache, blocking, txnQueue, execAbortQueue)
+			execute(task, conn, server, cache, blocking, txnQueue, execAbortQueue)
 		}
 
 	case "DISCARD":
@@ -778,11 +787,10 @@ func execute(args []string, conn net.Conn, master string,
 	case "INFO":
 		// INFO replication
 		if args[1] == "replication" {
-			if master == "" {
-				_, err = sendBulkString(conn, "role:master")
-			} else {
-				_, err = sendBulkString(conn, "role:slave")
-			}
+			response := fmt.Sprintf("role:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d",
+				server.role, server.replID, server.replOffset)
+
+			_, err = sendBulkString(conn, response)
 			if err != nil {
 				fmt.Println("Error sending bulk string:", err.Error())
 				os.Exit(1)
@@ -795,19 +803,40 @@ func execute(args []string, conn net.Conn, master string,
 	}
 }
 
+// Redis uses 40-character hexadecimal strings (0-9, a-f) for replication ID
+func GenerateReplID() (string, error) {
+	bytes := make([]byte, 20) // 20 bytes = 40 hex chars
+	_, err := rand.Read(bytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %v", err)
+	}
+
+	return fmt.Sprintf("%x", bytes), nil
+}
+
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	// fmt.Println("Logs from your program will appear here!")
 
 	var l net.Listener
 	var err error
-	var master string
+
+	redisServer := RedisServer{
+		host: "0.0.0.0:6379",
+		role: "master",
+	}
+
+	redisServer.replID, err = GenerateReplID()
+	if err != nil {
+		fmt.Println("Failed to generate replication ID")
+		os.Exit(1)
+	}
 
 	if len(os.Args) >= 3 && os.Args[1] == "--port" {
-		l, err = net.Listen("tcp", "0.0.0.0:"+os.Args[2])
-	} else {
-		l, err = net.Listen("tcp", "0.0.0.0:6379")
+		redisServer.host = "0.0.0.0:" + os.Args[2]
 	}
+
+	l, err = net.Listen("tcp", redisServer.host)
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
@@ -815,8 +844,13 @@ func main() {
 	defer l.Close()
 
 	if len(os.Args) == 5 && os.Args[3] == "--replicaof" {
-		master = strings.ReplaceAll(os.Args[4], "localhost", "0.0.0.0")
-		master = strings.ReplaceAll(master, " ", ":")
+		parts := strings.SplitN(os.Args[4], " ", 2)
+		if parts[0] == "localhost" {
+			parts[0] = "0.0.0.0"
+		}
+		redisServer.master = parts[0] + ":" + parts[1]
+
+		redisServer.role = "slave"
 	}
 
 	cache := make(map[string]RedisValue)
@@ -831,11 +865,11 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, master, cache, blocking, txnQueue, execAbortQueue)
+		go handleRequest(conn, redisServer, cache, blocking, txnQueue, execAbortQueue)
 	}
 }
 
-func handleRequest(conn net.Conn, master string,
+func handleRequest(conn net.Conn, redisServer RedisServer,
 	cache map[string]RedisValue, blocking chan BlockingItem,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 ) {
@@ -876,6 +910,6 @@ func handleRequest(conn net.Conn, master string,
 			continue
 		}
 
-		execute(args, conn, master, cache, blocking, txnQueue, execAbortQueue)
+		execute(args, conn, redisServer, cache, blocking, txnQueue, execAbortQueue)
 	}
 }
