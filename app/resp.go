@@ -1,40 +1,26 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 )
 
-func receive(conn net.Conn) (string, error) {
-	msg := ""
-
-	CR := false
-	LF := false
-	for !CR || !LF {
-		bytes := make([]byte, 1)
-		_, err := conn.Read(bytes)
-		if err != nil {
-			return "", err
-		}
-
-		recv := string(bytes)
-		switch recv {
-		case "\r":
-			CR = true
-		case "\n":
-			LF = true
-		default:
-			msg += recv
-		}
+func receiveLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
 	}
-
-	return msg, nil
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // Receive command from client as an array of bulk string
 func receiveCommand(conn net.Conn) ([]string, error) {
-	lengthData, err := receive(conn)
+	reader := bufio.NewReader(conn)
+
+	lengthData, err := receiveLine(reader)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +36,7 @@ func receiveCommand(conn net.Conn) ([]string, error) {
 
 	args := []string{}
 	for range length {
-		argLengthData, err := receive(conn)
+		argLengthData, err := receiveLine(reader)
 		if err != nil {
 			return nil, err
 		}
@@ -65,7 +51,7 @@ func receiveCommand(conn net.Conn) ([]string, error) {
 			return nil, err
 		}
 
-		arg, err := receive(conn)
+		arg, err := receiveLine(reader)
 		if err != nil {
 			return nil, err
 		}
@@ -79,88 +65,59 @@ func receiveCommand(conn net.Conn) ([]string, error) {
 	return args, nil
 }
 
-func sendSimpleString(conn net.Conn, value string) (int, error) {
-	response := fmt.Sprintf("+%s\r\n", value)
-
-	return conn.Write([]byte(response))
+func encodeSimpleString(value string) string {
+	return fmt.Sprintf("+%s\r\n", value)
 }
 
-func sendBulkString(conn net.Conn, value string) (int, error) {
-	response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
-
-	return conn.Write([]byte(response))
+func encodeBulkString(value string) string {
+	return fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
 }
 
-func sendNullBulkString(conn net.Conn) (int, error) {
-	return conn.Write([]byte("$-1\r\n"))
+func encodeNullString() string {
+	return "$-1\r\n"
 }
 
-func sendInteger(conn net.Conn, value int) (int, error) {
-	response := fmt.Sprintf(":%d\r\n", value)
-
-	return conn.Write([]byte(response))
+func encodeInteger(value int) string {
+	return fmt.Sprintf(":%d\r\n", value)
 }
 
-func sendArray(conn net.Conn, values []string) (int, error) {
+func encodeStringArray(values []string) string {
 	if len(values) == 0 {
-		return conn.Write([]byte("*0\r\n"))
+		return "*0\r\n"
 	}
 
-	response := fmt.Sprintf("*%d\r\n", len(values))
-	totalBytes, err := conn.Write([]byte(response))
-	if err != nil {
-		return 0, err
-	}
-
+	encoded := fmt.Sprintf("*%d\r\n", len(values))
 	for _, value := range values {
-		n, err := sendBulkString(conn, value)
-		if err != nil {
-			return 0, err
-		}
-		totalBytes += n
+		encoded += encodeBulkString(value)
 	}
 
-	return totalBytes, err
+	return encoded
 }
 
-func sendAnyArray(conn net.Conn, values []any) (int, error) {
+func encodeAnyArray(values []any) string {
 	if len(values) == 0 {
-		return conn.Write([]byte("*0\r\n"))
+		return "*0\r\n"
 	}
 
-	response := fmt.Sprintf("*%d\r\n", len(values))
-	totalBytes, err := conn.Write([]byte(response))
-	if err != nil {
-		return 0, err
-	}
-
+	encoded := fmt.Sprintf("*%d\r\n", len(values))
 	for _, value := range values {
-		var err error
-		var n int
-
 		switch value := value.(type) {
 		case string:
-			n, err = sendBulkString(conn, value)
+			encoded += encodeBulkString(value)
 		case []string:
-			n, err = sendArray(conn, value)
+			encoded += encodeStringArray(value)
 		case []any:
-			n, err = sendAnyArray(conn, value)
+			encoded += encodeAnyArray(value)
 		}
-		if err != nil {
-			return 0, err
-		}
-		totalBytes += n
 	}
 
-	return totalBytes, err
+	return encoded
 }
 
-func sendNullArray(conn net.Conn) (int, error) {
-	return conn.Write([]byte("*-1\r\n"))
+func encodeNullArray() string {
+	return "*-1\r\n"
 }
 
-func sendSimpleError(conn net.Conn, msg string) (int, error) {
-	response := fmt.Sprintf("-%s\r\n", msg)
-
-	return conn.Write([]byte(response))
+func encodeSimpleError(msg string) string {
+	return fmt.Sprintf("-%s\r\n", msg)
 }

@@ -160,46 +160,32 @@ func validateCommand(args []string) error {
 func execute(args []string, conn net.Conn, server RedisServer,
 	cache map[string]RedisValue, blocking chan BlockingItem,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
-) {
+) string {
 	command := args[0]
 	connID := fmt.Sprintf("%p", conn)
 	var err error
-	var res any
 
 	switch command {
 	case "PING":
-		_, err = sendSimpleString(conn, "PONG")
-		if err != nil {
-			fmt.Println("Error sending response:", err.Error())
-			os.Exit(1)
-		}
+		return encodeSimpleString("PONG")
 
 	case "ECHO":
 		// ECHO <value>
-		_, err = sendBulkString(conn, args[1])
-		if err != nil {
-			fmt.Println("Error sending response:", err.Error())
-			os.Exit(1)
-		}
+		return encodeBulkString(args[1])
 
 	case "SET":
 		// SET <key> <value> (EX/PX <timeout-sec/ms>)
 		expiryMs := int64(-1)
 		if len(args) == 5 {
+			expiry, err := strconv.Atoi(args[4])
+			if err != nil {
+				return encodeSimpleError("ERR value is not an integer or out of range")
+			}
+
 			switch strings.ToUpper(args[3]) {
 			case "EX":
-				expiry, err := strconv.Atoi(args[4])
-				if err != nil {
-					fmt.Println("Expecting 'SET <key> <value> EX <seconds>', got:", args)
-					os.Exit(1)
-				}
 				expiryMs = time.Now().UnixMilli() + int64(expiry)*1000
 			case "PX":
-				expiry, err := strconv.Atoi(args[4])
-				if err != nil {
-					fmt.Println("Expecting 'SET <key> <value> PX <millis>', got:", args)
-					os.Exit(1)
-				}
 				expiryMs = time.Now().UnixMilli() + int64(expiry)
 			}
 		}
@@ -209,11 +195,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			expiry: expiryMs,
 		}
 
-		_, err = sendSimpleString(conn, "OK")
-		if err != nil {
-			fmt.Println("Error sending simple string:", err.Error())
-			os.Exit(1)
-		}
+		return encodeSimpleString("OK")
 
 	case "GET":
 		// GET <key>
@@ -221,23 +203,12 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		entry, exists := cache[key]
 
 		if !exists {
-			res = nil
+			return encodeNullString()
 		} else if entry.IsExpired() {
 			delete(cache, key)
-			res = nil
+			return encodeNullString()
 		} else {
-			res = entry
-		}
-
-		if res == nil {
-			_, err = sendNullBulkString(conn)
-		} else {
-			_, err = sendBulkString(conn, res.(*StringEntry).value)
-		}
-
-		if err != nil {
-			fmt.Println("Error sending response:", err.Error())
-			os.Exit(1)
+			return encodeBulkString(entry.(*StringEntry).value)
 		}
 
 	case "INCR":
@@ -245,29 +216,17 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		key := args[1]
 		entry, exists := cache[key]
 
-		if !exists {
+		if !exists || entry.IsExpired() {
 			cache[key] = &StringEntry{
 				value:  "1",
 				expiry: -1,
 			}
-			res = 1
-		} else if entry.IsExpired() {
-			delete(cache, key)
-			cache[key] = &StringEntry{
-				value:  "1",
-				expiry: -1,
-			}
-			res = 1
+			return encodeInteger(1)
 		} else {
 			entryStr := entry.(*StringEntry)
 			entryInt, err2 := strconv.Atoi(entryStr.value)
 			if err2 != nil {
-				_, err = sendSimpleError(conn, "ERR value is not an integer or out of range")
-				if err != nil {
-					fmt.Println("Error sending response:", err.Error())
-					os.Exit(1)
-				}
-				return
+				return encodeSimpleError("ERR value is not an integer or out of range")
 			}
 
 			entryInt++
@@ -275,13 +234,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 				value:  strconv.Itoa(entryInt),
 				expiry: entryStr.expiry,
 			}
-			res = entryInt
-		}
-
-		_, err = sendInteger(conn, res.(int))
-		if err != nil {
-			fmt.Println("Error sending response:", err.Error())
-			os.Exit(1)
+			return encodeInteger(entryInt)
 		}
 
 	case "RPUSH":
@@ -304,11 +257,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			}()
 		}
 
-		_, err = sendInteger(conn, len(entry.value))
-		if err != nil {
-			fmt.Println("Error sending integer:", err.Error())
-			os.Exit(1)
-		}
+		return encodeInteger(len(entry.value))
 
 	case "LPUSH":
 		// LPUSH <list-name> <values>...
@@ -330,22 +279,18 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			}()
 		}
 
-		_, err = sendInteger(conn, len(entry.value))
-		if err != nil {
-			fmt.Println("Error sending integer:", err.Error())
-			os.Exit(1)
-		}
+		return encodeInteger(len(entry.value))
 
 	case "LRANGE":
 		// LRANGE <list-name> <start> <stop>
 		key := args[1]
 		start, err := strconv.Atoi(args[2])
 		if err != nil {
-			res = nil
+			return encodeSimpleError("ERR value is not an integer or out of range")
 		}
 		stop, err := strconv.Atoi(args[3])
 		if err != nil {
-			res = nil
+			return encodeSimpleError("ERR value is not an integer or out of range")
 		}
 
 		list, exists := cache[key]
@@ -362,21 +307,10 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		}
 
 		if !exists || start > stop || start >= len(entry.value) {
-			res = []string{}
+			return encodeStringArray([]string{})
 		} else {
 			stop = min(len(entry.value), stop+1) // change stop to exclusive boundary
-			res = entry.value[start:stop]
-		}
-
-		if res == nil {
-			_, err = sendSimpleError(conn, "ERR value is not an integer or out of range")
-		} else {
-			_, err = sendArray(conn, res.([]string))
-		}
-
-		if err != nil {
-			fmt.Println("Error sending response:", err.Error())
-			os.Exit(1)
+			return encodeStringArray(entry.value[start:stop])
 		}
 
 	case "LLEN":
@@ -388,17 +322,12 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			entry = list.(*ListEntry)
 		}
 
+		length := 0
 		if exists {
-			res = len(entry.value)
-		} else {
-			res = 0
+			length = len(entry.value)
 		}
 
-		_, err = sendInteger(conn, res.(int))
-		if err != nil {
-			fmt.Println("Error sending integer:", err.Error())
-			os.Exit(1)
-		}
+		return encodeInteger(length)
 
 	case "LPOP":
 		// LPOP <list-name> (<pop-count>)
@@ -408,11 +337,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		if len(args) == 3 {
 			count, err = strconv.Atoi(args[2])
 			if err != nil {
-				_, err = sendSimpleError(conn, "ERR value is not an integer or out of range")
-				if err != nil {
-					fmt.Println("Error sending error:", err.Error())
-					os.Exit(1)
-				}
+				return encodeSimpleError("ERR value is not an integer or out of range")
 			}
 		}
 
@@ -423,11 +348,11 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		}
 
 		if len(entry.value) == 0 {
-			_, err = sendNullBulkString(conn)
+			return encodeNullString()
 		} else if count == 1 {
 			peek := entry.value[0]
 			entry.value = entry.value[1:]
-			_, err = sendBulkString(conn, peek)
+			return encodeBulkString(peek)
 		} else {
 			count = min(len(entry.value), count)
 			values := entry.value[:count]
@@ -438,12 +363,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 				entry.value = entry.value[count:]
 			}
 
-			_, err = sendArray(conn, values)
-		}
-
-		if err != nil {
-			fmt.Println("Error sending bulk string:", err.Error())
-			os.Exit(1)
+			return encodeStringArray(values)
 		}
 
 	case "BLPOP":
@@ -451,12 +371,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		key := args[1]
 		timeout, err := strconv.ParseFloat(args[2], 64)
 		if err != nil {
-			_, err = sendSimpleError(conn, "ERR value is not an integer or out of range")
-			if err != nil {
-				fmt.Println("Error sending response:", err.Error())
-				os.Exit(1)
-			}
-			return
+			return encodeSimpleError("ERR value is not an integer or out of range")
 		}
 
 		var timer <-chan time.Time
@@ -472,21 +387,11 @@ func execute(args []string, conn net.Conn, server RedisServer,
 					entry := list.(*ListEntry)
 					peek := entry.value[0]
 					entry.value = entry.value[1:]
-					_, err = sendArray(conn, []string{key, peek})
-					if err != nil {
-						fmt.Println("Error sending response:", err.Error())
-						os.Exit(1)
-					}
-					return
+					return encodeStringArray([]string{key, peek})
 				}
 
 			case <-timer:
-				_, err = sendNullArray(conn)
-				if err != nil {
-					fmt.Println("Error sending response:", err.Error())
-					os.Exit(1)
-				}
-				return
+				return encodeNullArray()
 			}
 		}
 
@@ -496,14 +401,9 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		entry, exists := cache[key]
 
 		if exists {
-			_, err = sendSimpleString(conn, entry.Type())
+			return encodeSimpleString(entry.Type())
 		} else {
-			_, err = sendSimpleString(conn, "none")
-		}
-
-		if err != nil {
-			fmt.Println("Error sending simple string:", err.Error())
-			os.Exit(1)
+			return encodeSimpleString("none")
 		}
 
 	case "XADD":
@@ -516,15 +416,8 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		if exists {
 			entry = list.(*StreamEntry)
 
-			if err := ValidateStreamID(entryID, entry.lastID); err != nil {
-				if streamErr, ok := err.(StreamIDError); ok {
-					_, err := sendSimpleError(conn, streamErr.message)
-					if err != nil {
-						fmt.Println("Error sending error:", err.Error())
-						os.Exit(1)
-					}
-				}
-				return
+			if err = ValidateStreamID(entryID, entry.lastID); err != nil {
+				return encodeSimpleError(err.(StreamIDError).message)
 			}
 			entryID, err = GenerateStreamID(entryID, entry.lastID)
 		} else {
@@ -554,11 +447,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			blocking <- BlockingItem{key: streamKey}
 		}()
 
-		_, err = sendBulkString(conn, entryID)
-		if err != nil {
-			fmt.Println("Error sending bulk string:", err.Error())
-			os.Exit(1)
-		}
+		return encodeBulkString(entryID)
 
 	case "XRANGE":
 		// XRANGE <stream-key> <start-id> <end-id>
@@ -571,8 +460,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		if endID != "+" && len(endParts) != 2 {
 			endIDms, err := strconv.ParseInt(endID, 10, 64)
 			if err != nil {
-				fmt.Println("Error parsing endID:", err.Error())
-				os.Exit(1)
+				return encodeSimpleError("ERR value is not an integer or out of range")
 			}
 			endID = fmt.Sprintf("%d", endIDms+1)
 		}
@@ -599,11 +487,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 				response = append(response, []any{item.ID, item.Data})
 			}
 
-			_, err = sendAnyArray(conn, response)
-			if err != nil {
-				fmt.Println("Error sending bulk string:", err.Error())
-				os.Exit(1)
-			}
+			return encodeAnyArray(response)
 		}
 
 	case "XREAD":
@@ -614,8 +498,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		if isBlocking {
 			blockMS, err = strconv.Atoi(args[2])
 			if err != nil {
-				fmt.Println("Error parsing block value:", err.Error())
-				os.Exit(1)
+				return encodeSimpleError("ERR value is not an integer or out of range")
 			}
 			streamNameIdx = 4
 		}
@@ -642,8 +525,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 
 				seq, err := strconv.Atoi(parts[1])
 				if err != nil {
-					fmt.Println("Error parsing entryID sequence:", err.Error())
-					os.Exit(1)
+					return encodeSimpleError("ERR value is not an integer or out of range")
 				}
 				startIDs[i] = fmt.Sprintf("%s-%d", parts[0], seq+1)
 
@@ -661,12 +543,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		}
 
 		if found {
-			_, err = sendAnyArray(conn, response)
-			if err != nil {
-				fmt.Println("Error sending bulk string:", err.Error())
-				os.Exit(1)
-			}
-			return
+			return encodeAnyArray(response)
 		}
 
 		if isBlocking {
@@ -676,7 +553,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 				timer = time.After(time.Duration(blockMS) * time.Millisecond)
 			}
 
-		blockingLoop:
+			// blockingLoop:
 			for {
 				select {
 				case item := <-blocking:
@@ -704,85 +581,51 @@ func execute(args []string, conn net.Conn, server RedisServer,
 					}
 
 					if found {
-						_, err = sendAnyArray(conn, blockingResponse)
-						if err != nil {
-							fmt.Println("Error sending bulk string:", err.Error())
-							os.Exit(1)
-						}
-						break blockingLoop
+						return encodeAnyArray(blockingResponse)
+						// break blockingLoop
 					}
 
 				case <-timer:
-					_, err = sendNullArray(conn)
-					if err != nil {
-						fmt.Println("Error sending Null Array:", err.Error())
-						os.Exit(1)
-					}
-					break blockingLoop
+					return encodeNullArray()
+					// break blockingLoop
 				}
 			}
 		}
 
 	case "MULTI":
 		txnQueue[connID] = [][]string{}
-		_, err = sendSimpleString(conn, "OK")
-		if err != nil {
-			fmt.Println("Error sending simple string:", err.Error())
-			os.Exit(1)
-		}
+		return encodeSimpleString("OK")
 
 	case "EXEC":
 		tasks, exists := txnQueue[connID]
 
 		if !exists {
-			_, err = sendSimpleError(conn, "ERR EXEC without MULTI")
-			if err != nil {
-				fmt.Println("Error sending simple error:", err.Error())
-				os.Exit(1)
-			}
-			return
+			return encodeSimpleError("ERR EXEC without MULTI")
 		}
 		delete(txnQueue, connID)
 
 		if execAbortQueue[connID] {
 			delete(execAbortQueue, connID)
-			_, err = sendSimpleError(conn, "EXECABORT Transaction discarded because of previous errors")
-			if err != nil {
-				fmt.Println("Error sending simple error:", err.Error())
-				os.Exit(1)
-			}
-			return
+			return encodeSimpleError("EXECABORT Transaction discarded because of previous errors")
 		}
 
 		response := fmt.Sprintf("*%d\r\n", len(tasks))
-		_, err := conn.Write([]byte(response))
-		if err != nil {
-			fmt.Println("Error sending response:", err.Error())
-			os.Exit(1)
-		}
 
 		for _, task := range tasks {
-			execute(task, conn, server, cache, blocking, txnQueue, execAbortQueue)
+			response += execute(task, conn, server, cache, blocking, txnQueue, execAbortQueue)
 		}
+
+		return response
 
 	case "DISCARD":
 		_, exists := txnQueue[connID]
 
 		if !exists {
-			_, err = sendSimpleError(conn, "ERR DISCARD without MULTI")
-			if err != nil {
-				fmt.Println("Error sending simple error:", err.Error())
-				os.Exit(1)
-			}
-			return
+			return encodeSimpleError("ERR DISCARD without MULTI")
 		}
 		delete(txnQueue, connID)
 
-		_, err = sendSimpleString(conn, "OK")
-		if err != nil {
-			fmt.Println("Error sending simple string:", err.Error())
-			os.Exit(1)
-		}
+		return encodeSimpleString("OK")
 
 	case "INFO":
 		// INFO replication
@@ -790,17 +633,15 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			response := fmt.Sprintf("role:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d",
 				server.role, server.replID, server.replOffset)
 
-			_, err = sendBulkString(conn, response)
-			if err != nil {
-				fmt.Println("Error sending bulk string:", err.Error())
-				os.Exit(1)
-			}
+			return encodeBulkString(response)
 		}
 
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
 	}
+
+	return ""
 }
 
 // Redis uses 40-character hexadecimal strings (0-9, a-f) for replication ID
@@ -890,9 +731,10 @@ func handleRequest(conn net.Conn, redisServer RedisServer,
 		err = validateCommand(args)
 		if err != nil {
 			execAbortQueue[connID] = true
-			_, err = sendSimpleError(conn, err.Error())
+			response := encodeSimpleError(err.Error())
+			_, err = conn.Write([]byte(response))
 			if err != nil {
-				fmt.Println("Error sending error:", err.Error())
+				fmt.Println("Error sending response:", err.Error())
 				os.Exit(1)
 			}
 		}
@@ -902,14 +744,20 @@ func handleRequest(conn net.Conn, redisServer RedisServer,
 		_, exists := txnQueue[connID]
 		if exists && command != "EXEC" && command != "DISCARD" {
 			txnQueue[connID] = append(txnQueue[connID], args)
-			_, err = sendSimpleString(conn, "QUEUED")
+			response := encodeSimpleString("QUEUED")
+			_, err = conn.Write([]byte(response))
 			if err != nil {
-				fmt.Println("Error sending simple string:", err.Error())
+				fmt.Println("Error sending response:", err.Error())
 				os.Exit(1)
 			}
 			continue
 		}
 
-		execute(args, conn, redisServer, cache, blocking, txnQueue, execAbortQueue)
+		response := execute(args, conn, redisServer, cache, blocking, txnQueue, execAbortQueue)
+		_, err = conn.Write([]byte(response))
+		if err != nil {
+			fmt.Println("Error sending response:", err.Error())
+			os.Exit(1)
+		}
 	}
 }
