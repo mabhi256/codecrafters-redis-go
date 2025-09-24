@@ -27,18 +27,26 @@ func (server *RedisServer) handshake() {
 	replconf := encodeStringArray([]string{"REPLCONF", "listening-port", server.port})
 	_, err = conn.Write([]byte(replconf))
 	if err != nil {
-		fmt.Println("Failed to replconf")
+		fmt.Println("Failed to replconf listening-port")
 		os.Exit(1)
 	}
 	receiveLine(reader) // receive OK
 
-	psync2 := encodeStringArray([]string{"REPLCONF", "capa", "psync2"})
-	_, err = conn.Write([]byte(psync2))
+	replconf2 := encodeStringArray([]string{"REPLCONF", "capa", "psync2"})
+	_, err = conn.Write([]byte(replconf2))
 	if err != nil {
-		fmt.Println("Failed to replconf")
+		fmt.Println("Failed to replconf capa")
 		os.Exit(1)
 	}
 	receiveLine(reader) // receive OK
+
+	psync := encodeStringArray([]string{"PSYNC", server.replID, fmt.Sprintf("%d", server.replOffset)})
+	_, err = conn.Write([]byte(psync))
+	if err != nil {
+		fmt.Println("Failed to psync")
+		os.Exit(1)
+	}
+	receiveLine(reader) // receive +FULLRESYNC <REPL_ID> 0\r\n
 
 	conn.Close()
 }

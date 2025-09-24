@@ -695,6 +695,8 @@ func main() {
 		server.master = parts[0] + ":" + parts[1]
 
 		server.role = "slave"
+		server.replID = "?"
+		server.replOffset = -1
 
 		server.handshake()
 	}
