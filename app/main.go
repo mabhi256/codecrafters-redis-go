@@ -12,6 +12,7 @@ import (
 )
 
 type RedisServer struct {
+	port       string
 	host       string
 	role       string
 	master     string
@@ -663,6 +664,7 @@ func main() {
 	var err error
 
 	server := RedisServer{
+		port: "6379",
 		host: "0.0.0.0:6379",
 		role: "master",
 	}
@@ -674,6 +676,7 @@ func main() {
 	}
 
 	if len(os.Args) >= 3 && os.Args[1] == "--port" {
+		server.port = os.Args[2]
 		server.host = "0.0.0.0:" + os.Args[2]
 	}
 
