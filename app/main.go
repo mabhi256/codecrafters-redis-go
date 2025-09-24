@@ -637,6 +637,11 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			return encodeBulkString(response)
 		}
 
+	case "REPLCONF":
+		// REPLCONF listening-port <PORT>
+		// REPLCONF capa psync2
+		return encodeSimpleString("OK")
+
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
