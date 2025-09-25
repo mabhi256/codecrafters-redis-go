@@ -22,6 +22,7 @@ type RedisServer struct {
 	master     string
 	replID     string
 	replOffset int
+	slaves     []net.Conn
 }
 
 type RedisValue interface {
@@ -162,12 +163,14 @@ func validateCommand(args []string) error {
 	return nil
 }
 
-func execute(args []string, conn net.Conn, server RedisServer,
+func execute(args []string, respCommand string, conn net.Conn, server *RedisServer,
 	cache map[string]RedisValue, blocking chan BlockingItem,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 ) string {
 	command := args[0]
 	connID := fmt.Sprintf("%p", conn)
+	isWrite := false
+	var response string
 	var err error
 
 	switch command {
@@ -180,6 +183,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 
 	case "SET":
 		// SET <key> <value> (EX/PX <timeout-sec/ms>)
+		isWrite = true
 		expiryMs := int64(-1)
 		if len(args) == 5 {
 			expiry, err := strconv.Atoi(args[4])
@@ -200,7 +204,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			expiry: expiryMs,
 		}
 
-		return encodeSimpleString("OK")
+		response = encodeSimpleString("OK")
 
 	case "GET":
 		// GET <key>
@@ -218,6 +222,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 
 	case "INCR":
 		// INCR <key>
+		isWrite = true
 		key := args[1]
 		entry, exists := cache[key]
 
@@ -226,7 +231,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 				value:  "1",
 				expiry: -1,
 			}
-			return encodeInteger(1)
+			response = encodeInteger(1)
 		} else {
 			entryStr := entry.(*StringEntry)
 			entryInt, err2 := strconv.Atoi(entryStr.value)
@@ -239,11 +244,12 @@ func execute(args []string, conn net.Conn, server RedisServer,
 				value:  strconv.Itoa(entryInt),
 				expiry: entryStr.expiry,
 			}
-			return encodeInteger(entryInt)
+			response = encodeInteger(entryInt)
 		}
 
 	case "RPUSH":
 		// RPUSH <list-name> <values>...
+		isWrite = true
 		key := args[1]
 		list, exists := cache[key]
 
@@ -262,10 +268,11 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			}()
 		}
 
-		return encodeInteger(len(entry.value))
+		response = encodeInteger(len(entry.value))
 
 	case "LPUSH":
 		// LPUSH <list-name> <values>...
+		isWrite = true
 		key := args[1]
 		list, exists := cache[key]
 
@@ -284,7 +291,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			}()
 		}
 
-		return encodeInteger(len(entry.value))
+		response = encodeInteger(len(entry.value))
 
 	case "LRANGE":
 		// LRANGE <list-name> <start> <stop>
@@ -312,10 +319,10 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		}
 
 		if !exists || start > stop || start >= len(entry.value) {
-			return encodeStringArray([]string{})
+			response = encodeStringArray([]string{})
 		} else {
 			stop = min(len(entry.value), stop+1) // change stop to exclusive boundary
-			return encodeStringArray(entry.value[start:stop])
+			response = encodeStringArray(entry.value[start:stop])
 		}
 
 	case "LLEN":
@@ -336,6 +343,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 
 	case "LPOP":
 		// LPOP <list-name> (<pop-count>)
+		isWrite = true
 		key := args[1]
 		count := 1
 		var err error
@@ -353,11 +361,11 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		}
 
 		if len(entry.value) == 0 {
-			return encodeNullString()
+			response = encodeNullString()
 		} else if count == 1 {
 			peek := entry.value[0]
 			entry.value = entry.value[1:]
-			return encodeBulkString(peek)
+			response = encodeBulkString(peek)
 		} else {
 			count = min(len(entry.value), count)
 			values := entry.value[:count]
@@ -368,11 +376,12 @@ func execute(args []string, conn net.Conn, server RedisServer,
 				entry.value = entry.value[count:]
 			}
 
-			return encodeStringArray(values)
+			response = encodeStringArray(values)
 		}
 
 	case "BLPOP":
 		// BLPOP <list-name> <timeout>
+		isWrite = true
 		key := args[1]
 		timeout, err := strconv.ParseFloat(args[2], 64)
 		if err != nil {
@@ -384,6 +393,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			timer = time.After(time.Duration(timeout*1000) * time.Millisecond)
 		}
 
+	blockLoop:
 		for {
 			select {
 			case item := <-blocking:
@@ -392,11 +402,13 @@ func execute(args []string, conn net.Conn, server RedisServer,
 					entry := list.(*ListEntry)
 					peek := entry.value[0]
 					entry.value = entry.value[1:]
-					return encodeStringArray([]string{key, peek})
+					response = encodeStringArray([]string{key, peek})
+					break blockLoop
 				}
 
 			case <-timer:
-				return encodeNullArray()
+				response = encodeNullArray()
+				break blockLoop
 			}
 		}
 
@@ -413,6 +425,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 
 	case "XADD":
 		// XADD <stream-key> <entry-id> <key1> <value1> ...
+		isWrite = true
 		streamKey := args[1]
 		entryID := args[2]
 
@@ -452,7 +465,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			blocking <- BlockingItem{key: streamKey}
 		}()
 
-		return encodeBulkString(entryID)
+		response = encodeBulkString(entryID)
 
 	case "XRANGE":
 		// XRANGE <stream-key> <start-id> <end-id>
@@ -475,7 +488,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		// the maximum sequence number for the end.
 		list, exists := cache[streamKey]
 		var stream *StreamEntry
-		var response []any
+		var rangeRes []any
 		if exists {
 			stream = list.(*StreamEntry)
 
@@ -489,10 +502,10 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			res := stream.root.RangeQuery(startID, endID)
 
 			for _, item := range res {
-				response = append(response, []any{item.ID, item.Data})
+				rangeRes = append(rangeRes, []any{item.ID, item.Data})
 			}
 
-			return encodeAnyArray(response)
+			return encodeAnyArray(rangeRes)
 		}
 
 	case "XREAD":
@@ -514,7 +527,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 
 		// Return immediately if any stream has data, else wait till timeout
 		found := false
-		var response []any
+		var readRes []any
 		startIDs := make([]string, streamCount)
 
 		for i, streamKey := range streamKeys {
@@ -544,11 +557,11 @@ func execute(args []string, conn net.Conn, server RedisServer,
 					found = true
 				}
 			}
-			response = append(response, []any{streamKey, entries})
+			readRes = append(readRes, []any{streamKey, entries})
 		}
 
 		if found {
-			return encodeAnyArray(response)
+			return encodeAnyArray(readRes)
 		}
 
 		if isBlocking {
@@ -563,7 +576,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 				select {
 				case item := <-blocking:
 					found := false
-					var blockingResponse []any
+					var blockingReadRes []any
 
 					for i, streamKey := range streamKeys {
 						var entries []any
@@ -582,11 +595,11 @@ func execute(args []string, conn net.Conn, server RedisServer,
 								found = true
 							}
 						}
-						blockingResponse = append(blockingResponse, []any{streamKey, entries})
+						blockingReadRes = append(blockingReadRes, []any{streamKey, entries})
 					}
 
 					if found {
-						return encodeAnyArray(blockingResponse)
+						return encodeAnyArray(blockingReadRes)
 						// break blockingLoop
 					}
 
@@ -614,13 +627,11 @@ func execute(args []string, conn net.Conn, server RedisServer,
 			return encodeSimpleError("EXECABORT Transaction discarded because of previous errors")
 		}
 
-		response := fmt.Sprintf("*%d\r\n", len(tasks))
+		response = fmt.Sprintf("*%d\r\n", len(tasks))
 
 		for _, task := range tasks {
-			response += execute(task, conn, server, cache, blocking, txnQueue, execAbortQueue)
+			response += execute(task, respCommand, conn, server, cache, blocking, txnQueue, execAbortQueue)
 		}
-
-		return response
 
 	case "DISCARD":
 		_, exists := txnQueue[connID]
@@ -648,6 +659,7 @@ func execute(args []string, conn net.Conn, server RedisServer,
 
 	case "PSYNC":
 		if server.role == "master" {
+			server.slaves = append(server.slaves, conn)
 			response := fmt.Sprintf("FULLRESYNC %s %d", server.replID, server.replOffset)
 			return encodeSimpleString(response)
 		}
@@ -657,7 +669,13 @@ func execute(args []string, conn net.Conn, server RedisServer,
 		os.Exit(1)
 	}
 
-	return ""
+	if isWrite /* && command != "REPLCONF" && args[1] != "GETACK" */ {
+		for _, slave := range server.slaves {
+			slave.Write([]byte(respCommand))
+		}
+	}
+
+	return response
 }
 
 // Redis uses 40-character hexadecimal strings (0-9, a-f) for replication ID
@@ -679,9 +697,10 @@ func main() {
 	var err error
 
 	server := RedisServer{
-		port: "6379",
-		host: "0.0.0.0:6379",
-		role: "master",
+		port:   "6379",
+		host:   "0.0.0.0:6379",
+		role:   "master",
+		slaves: []net.Conn{},
 	}
 
 	server.replID, err = GenerateReplID()
@@ -728,11 +747,11 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, server, cache, blocking, txnQueue, execAbortQueue)
+		go handleRequest(conn, &server, cache, blocking, txnQueue, execAbortQueue)
 	}
 }
 
-func handleRequest(conn net.Conn, redisServer RedisServer,
+func handleRequest(conn net.Conn, redisServer *RedisServer,
 	cache map[string]RedisValue, blocking chan BlockingItem,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 ) {
@@ -741,7 +760,7 @@ func handleRequest(conn net.Conn, redisServer RedisServer,
 	connID := fmt.Sprintf("%p", conn)
 
 	for {
-		args, err := receiveCommand(conn)
+		args, respCommand, err := receiveCommand(conn)
 		if err != nil && err != io.EOF {
 			fmt.Println("Error receiving data:", err.Error())
 			os.Exit(1)
@@ -775,14 +794,14 @@ func handleRequest(conn net.Conn, redisServer RedisServer,
 			continue
 		}
 
-		response := execute(args, conn, redisServer, cache, blocking, txnQueue, execAbortQueue)
+		response := execute(args, respCommand, conn, redisServer, cache, blocking, txnQueue, execAbortQueue)
 		_, err = conn.Write([]byte(response))
 		if err != nil {
 			fmt.Println("Error sending response:", err.Error())
 			os.Exit(1)
 		}
 
-		if command == "PSYNC" {
+		if command == "PSYNC" && redisServer.role == "master" {
 			rdb := fmt.Sprintf("$%d\r\n%s", len(emptyRDB), emptyRDB)
 			_, err = conn.Write([]byte(rdb))
 			if err != nil {

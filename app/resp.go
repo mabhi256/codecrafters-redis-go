@@ -13,56 +13,64 @@ func receiveLine(reader *bufio.Reader) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return line, nil
 }
 
 // Receive command from client as an array of bulk string
-func receiveCommand(conn net.Conn) ([]string, error) {
+func receiveCommand(conn net.Conn) ([]string, string, error) {
 	reader := bufio.NewReader(conn)
+	var respCommand string
 
 	lengthData, err := receiveLine(reader)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if len(lengthData) <= 0 || lengthData[0] != '*' {
-		return nil, fmt.Errorf("expecting first byte * for command")
+		return nil, "", fmt.Errorf("expecting first byte * for command")
 	}
+	respCommand = lengthData
+	lengthData = strings.TrimRight(lengthData, "\r\n")
 
 	lengthStr := lengthData[1:]
 	length, err := strconv.Atoi(lengthStr)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	args := []string{}
 	for range length {
 		argLengthData, err := receiveLine(reader)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
+		respCommand += argLengthData
+		argLengthData = strings.TrimRight(argLengthData, "\r\n")
 
 		if len(argLengthData) <= 0 || argLengthData[0] != '$' {
-			return nil, fmt.Errorf("expecting byte $ for command arg")
+			return nil, "", fmt.Errorf("expecting byte $ for command arg")
 		}
 
 		argLengthStr := argLengthData[1:]
 		argLength, err := strconv.Atoi(argLengthStr)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 
 		arg, err := receiveLine(reader)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
+
+		respCommand += arg
+		arg = strings.TrimRight(arg, "\r\n")
 		if len(arg) != argLength {
-			return nil, fmt.Errorf("expecting arg keyword of length: %d, received %s", argLength, arg)
+			return nil, "", fmt.Errorf("expecting arg keyword of length: %d, received %s", argLength, arg)
 		}
 
 		args = append(args, arg)
 	}
 
-	return args, nil
+	return args, respCommand, nil
 }
 
 func encodeSimpleString(value string) string {
