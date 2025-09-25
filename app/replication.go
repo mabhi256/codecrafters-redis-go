@@ -3,22 +3,22 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
-	"os"
+	"strconv"
+	"strings"
 )
 
-func (server *RedisServer) handshake() {
+func (server *RedisServer) handshake() (net.Conn, error) {
 	conn, err := net.Dial("tcp", server.master)
 	if err != nil {
-		fmt.Println("Failed to connect to master")
-		os.Exit(1)
+		return nil, err
 	}
 
 	ping := encodeStringArray([]string{"PING"})
 	_, err = conn.Write([]byte(ping))
 	if err != nil {
-		fmt.Println("Failed to ping master")
-		os.Exit(1)
+		return nil, err
 	}
 
 	reader := bufio.NewReader(conn)
@@ -27,26 +27,41 @@ func (server *RedisServer) handshake() {
 	replconf := encodeStringArray([]string{"REPLCONF", "listening-port", server.port})
 	_, err = conn.Write([]byte(replconf))
 	if err != nil {
-		fmt.Println("Failed to replconf listening-port")
-		os.Exit(1)
+		return nil, err
 	}
 	receiveLine(reader) // receive OK
 
 	replconf2 := encodeStringArray([]string{"REPLCONF", "capa", "psync2"})
 	_, err = conn.Write([]byte(replconf2))
 	if err != nil {
-		fmt.Println("Failed to replconf capa")
-		os.Exit(1)
+		return nil, err
 	}
 	receiveLine(reader) // receive OK
 
 	psync := encodeStringArray([]string{"PSYNC", server.replID, fmt.Sprintf("%d", server.replOffset)})
 	_, err = conn.Write([]byte(psync))
 	if err != nil {
-		fmt.Println("Failed to psync")
-		os.Exit(1)
+		return nil, err
 	}
 	receiveLine(reader) // receive +FULLRESYNC <REPL_ID> 0\r\n
 
-	conn.Close()
+	// receive RDB
+	rdbHeader, err := receiveLine(reader) // Read $<length>\r\n
+	if err != nil {
+		return nil, err
+	}
+	rdbHeader = strings.TrimRight(rdbHeader, "\r\n")
+	rdbLengthStr := rdbHeader[1:]
+	rdbLength, err := strconv.Atoi(rdbLengthStr)
+	if err != nil {
+		return nil, err
+	}
+
+	rdbData := make([]byte, rdbLength)
+	_, err = io.ReadFull(reader, rdbData)
+	if err != nil {
+		return nil, err
+	}
+
+	return conn, nil
 }

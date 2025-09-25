@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	_ "embed"
 	"fmt"
@@ -28,46 +29,6 @@ type RedisServer struct {
 type RedisValue interface {
 	Type() string
 	IsExpired() bool
-}
-
-type StringEntry struct {
-	value  string
-	expiry int64 // in ms
-}
-
-func (e *StringEntry) Type() string {
-	return "string"
-}
-
-func (e *StringEntry) IsExpired() bool {
-	return e.expiry != -1 && time.Now().UnixMilli() > e.expiry
-}
-
-type ListEntry struct {
-	value  []string
-	expiry int64 // in ms
-}
-
-func (e *ListEntry) Type() string {
-	return "list"
-}
-
-func (e *ListEntry) IsExpired() bool {
-	return e.expiry != -1 && time.Now().UnixMilli() > e.expiry
-}
-
-type StreamEntry struct {
-	root    *RadixNode
-	startID string
-	lastID  string
-}
-
-func (e *StreamEntry) Type() string {
-	return "stream"
-}
-
-func (e *StreamEntry) IsExpired() bool {
-	return false
 }
 
 type BlockingItem struct {
@@ -163,8 +124,8 @@ func validateCommand(args []string) error {
 	return nil
 }
 
-func execute(args []string, respCommand string, conn net.Conn, server *RedisServer,
-	cache map[string]RedisValue, blocking chan BlockingItem,
+func (server *RedisServer) execute(args []string, respCommand string, conn net.Conn,
+	cache *RedisCache,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 ) string {
 	command := args[0]
@@ -199,22 +160,22 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 			}
 		}
 
-		cache[args[1]] = &StringEntry{
+		cache.Set(args[1], &StringEntry{
 			value:  args[2],
 			expiry: expiryMs,
-		}
+		})
 
 		response = encodeSimpleString("OK")
 
 	case "GET":
 		// GET <key>
 		key := args[1]
-		entry, exists := cache[key]
+		entry, exists := cache.Get(key)
 
 		if !exists {
 			return encodeNullString()
 		} else if entry.IsExpired() {
-			delete(cache, key)
+			cache.Del(key)
 			return encodeNullString()
 		} else {
 			return encodeBulkString(entry.(*StringEntry).value)
@@ -224,13 +185,13 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 		// INCR <key>
 		isWrite = true
 		key := args[1]
-		entry, exists := cache[key]
+		entry, exists := cache.Get(key)
 
 		if !exists || entry.IsExpired() {
-			cache[key] = &StringEntry{
+			cache.Set(key, &StringEntry{
 				value:  "1",
 				expiry: -1,
-			}
+			})
 			response = encodeInteger(1)
 		} else {
 			entryStr := entry.(*StringEntry)
@@ -240,10 +201,10 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 			}
 
 			entryInt++
-			cache[key] = &StringEntry{
+			cache.Set(key, &StringEntry{
 				value:  strconv.Itoa(entryInt),
 				expiry: entryStr.expiry,
-			}
+			})
 			response = encodeInteger(entryInt)
 		}
 
@@ -251,20 +212,20 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 		// RPUSH <list-name> <values>...
 		isWrite = true
 		key := args[1]
-		list, exists := cache[key]
+		list, exists := cache.Get(key)
 
 		var entry *ListEntry
 		if exists {
 			entry = list.(*ListEntry)
 		} else {
 			entry = &ListEntry{value: []string{}, expiry: -1}
-			cache[key] = entry
+			cache.Set(key, entry)
 		}
 
 		for _, item := range args[2:] {
 			entry.value = append(entry.value, item)
 			go func() {
-				blocking <- BlockingItem{key: key /* , value: item */}
+				cache.blocking <- BlockingItem{key: key /* , value: item */}
 			}()
 		}
 
@@ -274,20 +235,20 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 		// LPUSH <list-name> <values>...
 		isWrite = true
 		key := args[1]
-		list, exists := cache[key]
+		list, exists := cache.Get(key)
 
 		var entry *ListEntry
 		if exists {
 			entry = list.(*ListEntry)
 		} else {
 			entry = &ListEntry{value: []string{}, expiry: -1}
-			cache[key] = entry
+			cache.Set(key, entry)
 		}
 
 		for _, item := range args[2:] {
 			entry.value = append([]string{item}, entry.value...)
 			go func() {
-				blocking <- BlockingItem{key: key /* , value: item */}
+				cache.blocking <- BlockingItem{key: key /* , value: item */}
 			}()
 		}
 
@@ -305,7 +266,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 			return encodeSimpleError("ERR value is not an integer or out of range")
 		}
 
-		list, exists := cache[key]
+		list, exists := cache.Get(key)
 		var entry *ListEntry
 		if exists {
 			entry = list.(*ListEntry)
@@ -328,7 +289,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 	case "LLEN":
 		// LLEN <list-name>
 		key := args[1]
-		list, exists := cache[key]
+		list, exists := cache.Get(key)
 		var entry *ListEntry
 		if exists {
 			entry = list.(*ListEntry)
@@ -354,7 +315,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 			}
 		}
 
-		list, exists := cache[key]
+		list, exists := cache.Get(key)
 		var entry *ListEntry
 		if exists {
 			entry = list.(*ListEntry)
@@ -371,7 +332,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 			values := entry.value[:count]
 
 			if count == len(entry.value) {
-				delete(cache, key)
+				cache.Del(key)
 			} else {
 				entry.value = entry.value[count:]
 			}
@@ -396,8 +357,8 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 	blockLoop:
 		for {
 			select {
-			case item := <-blocking:
-				list, exists := cache[key]
+			case item := <-cache.blocking:
+				list, exists := cache.Get(key)
 				if exists && item.key == key {
 					entry := list.(*ListEntry)
 					peek := entry.value[0]
@@ -415,7 +376,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 	case "TYPE":
 		// TYPE <key>
 		key := args[1]
-		entry, exists := cache[key]
+		entry, exists := cache.Get(key)
 
 		if exists {
 			return encodeSimpleString(entry.Type())
@@ -429,7 +390,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 		streamKey := args[1]
 		entryID := args[2]
 
-		list, exists := cache[streamKey]
+		list, exists := cache.Get(streamKey)
 		var entry *StreamEntry
 		if exists {
 			entry = list.(*StreamEntry)
@@ -445,7 +406,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 				startID: entryID,
 				lastID:  "",
 			}
-			cache[streamKey] = entry
+			cache.Set(streamKey, entry)
 		}
 		if err != nil {
 			fmt.Println("Error generating streamID:", err.Error())
@@ -462,7 +423,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 		entry.lastID = entryID
 
 		go func() {
-			blocking <- BlockingItem{key: streamKey}
+			cache.blocking <- BlockingItem{key: streamKey}
 		}()
 
 		response = encodeBulkString(entryID)
@@ -486,7 +447,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 		// The sequence number doesn't need to be included in the start and end IDs
 		// If not provided, XRANGE defaults to a sequence number of 0 for the start and
 		// the maximum sequence number for the end.
-		list, exists := cache[streamKey]
+		list, exists := cache.Get(streamKey)
 		var stream *StreamEntry
 		var rangeRes []any
 		if exists {
@@ -532,7 +493,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 
 		for i, streamKey := range streamKeys {
 			var entries []any
-			list, exists := cache[streamKey]
+			list, exists := cache.Get(streamKey)
 			if exists {
 				stream := list.(*StreamEntry)
 
@@ -574,13 +535,13 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 			// blockingLoop:
 			for {
 				select {
-				case item := <-blocking:
+				case item := <-cache.blocking:
 					found := false
 					var blockingReadRes []any
 
 					for i, streamKey := range streamKeys {
 						var entries []any
-						list, exists := cache[streamKey]
+						list, exists := cache.Get(streamKey)
 
 						if exists && item.key == streamKey {
 							stream := list.(*StreamEntry)
@@ -630,7 +591,7 @@ func execute(args []string, respCommand string, conn net.Conn, server *RedisServ
 		response = fmt.Sprintf("*%d\r\n", len(tasks))
 
 		for _, task := range tasks {
-			response += execute(task, respCommand, conn, server, cache, blocking, txnQueue, execAbortQueue)
+			response += server.execute(task, respCommand, conn, cache, txnQueue, execAbortQueue)
 		}
 
 	case "DISCARD":
@@ -696,6 +657,13 @@ func main() {
 	var l net.Listener
 	var err error
 
+	cache := &RedisCache{
+		data:     make(map[string]RedisValue),
+		blocking: make(chan BlockingItem, 100),
+	}
+	txnQueue := make(map[string][][]string) // connID -> array of args
+	execAbortQueue := make(map[string]bool)
+
 	server := RedisServer{
 		port:   "6379",
 		host:   "0.0.0.0:6379",
@@ -732,13 +700,15 @@ func main() {
 		server.replID = "?"
 		server.replOffset = -1
 
-		server.handshake()
-	}
+		masterConn, err := server.handshake()
+		if err != nil && err != io.EOF {
+			fmt.Println("Error handshaking master:", err.Error())
+			os.Exit(1)
+		}
+		defer masterConn.Close()
 
-	cache := make(map[string]RedisValue)
-	blocking := make(chan BlockingItem, 1)
-	txnQueue := make(map[string][][]string) // connID -> array of args
-	execAbortQueue := make(map[string]bool)
+		go handleRequest(masterConn, &server, cache, txnQueue, execAbortQueue)
+	}
 
 	for {
 		conn, err := l.Accept()
@@ -747,20 +717,23 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, &server, cache, blocking, txnQueue, execAbortQueue)
+		go handleRequest(conn, &server, cache, txnQueue, execAbortQueue)
 	}
 }
 
 func handleRequest(conn net.Conn, redisServer *RedisServer,
-	cache map[string]RedisValue, blocking chan BlockingItem,
+	cache *RedisCache,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 ) {
-	defer conn.Close()
+	if redisServer.role == "master" {
+		defer conn.Close()
+	}
 
 	connID := fmt.Sprintf("%p", conn)
+	reader := bufio.NewReader(conn)
 
 	for {
-		args, respCommand, err := receiveCommand(conn)
+		args, respCommand, err := receiveCommand(reader)
 		if err != nil && err != io.EOF {
 			fmt.Println("Error receiving data:", err.Error())
 			os.Exit(1)
@@ -794,7 +767,7 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 			continue
 		}
 
-		response := execute(args, respCommand, conn, redisServer, cache, blocking, txnQueue, execAbortQueue)
+		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue)
 		_, err = conn.Write([]byte(response))
 		if err != nil {
 			fmt.Println("Error sending response:", err.Error())

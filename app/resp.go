@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 )
@@ -17,8 +16,7 @@ func receiveLine(reader *bufio.Reader) (string, error) {
 }
 
 // Receive command from client as an array of bulk string
-func receiveCommand(conn net.Conn) ([]string, string, error) {
-	reader := bufio.NewReader(conn)
+func receiveCommand(reader *bufio.Reader) ([]string, string, error) {
 	var respCommand string
 
 	lengthData, err := receiveLine(reader)
