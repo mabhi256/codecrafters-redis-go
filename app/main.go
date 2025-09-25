@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	_ "embed"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +11,9 @@ import (
 	"strings"
 	"time"
 )
+
+//go:embed empty.rdb
+var emptyRDB []byte
 
 type RedisServer struct {
 	port       string
@@ -776,6 +780,15 @@ func handleRequest(conn net.Conn, redisServer RedisServer,
 		if err != nil {
 			fmt.Println("Error sending response:", err.Error())
 			os.Exit(1)
+		}
+
+		if command == "PSYNC" {
+			rdb := fmt.Sprintf("$%d\r\n%s", len(emptyRDB), emptyRDB)
+			_, err = conn.Write([]byte(rdb))
+			if err != nil {
+				fmt.Println("Error sending response:", err.Error())
+				os.Exit(1)
+			}
 		}
 	}
 }
