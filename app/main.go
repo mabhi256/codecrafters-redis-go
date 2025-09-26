@@ -636,6 +636,23 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			return encodeSimpleString(response)
 		}
 
+	case "WAIT":
+		// WAIT <numreplicas> <timeout-ms>
+		if server.role == "master" {
+			numReplicas, err := strconv.Atoi(args[1])
+			if err != nil {
+				return encodeSimpleError("ERR value is not an integer or out of range")
+			}
+			_, err = strconv.Atoi(args[2])
+			if err != nil {
+				return encodeSimpleError("ERR value is not an integer or out of range")
+			}
+
+			if numReplicas == 0 {
+				return encodeInteger(numReplicas)
+			}
+		}
+
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
