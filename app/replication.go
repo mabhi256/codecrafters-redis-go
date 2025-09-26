@@ -43,7 +43,19 @@ func (server *RedisServer) handshake() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	receiveLine(reader) // receive +FULLRESYNC <REPL_ID> 0\r\n
+	syncStr, err := receiveLine(reader) // receive +FULLRESYNC <REPL_ID> 0\r\n
+	if err != nil {
+		return nil, err
+	}
+	syncStr = strings.TrimRight(syncStr, "\r\n")
+	syncParts := strings.SplitN(syncStr, " ", 3)
+	if strings.HasSuffix(syncParts[0], "FULLRESYNC") {
+		server.replID = syncParts[1]
+		server.replOffset, err = strconv.Atoi(syncParts[2])
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// receive RDB
 	rdbHeader, err := receiveLine(reader) // Read $<length>\r\n

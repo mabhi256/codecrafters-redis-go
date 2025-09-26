@@ -618,7 +618,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		// REPLCONF capa psync2
 		// REPLCONF GETACK *
 		if server.role == "slave" && args[1] == "GETACK" && args[2] == "*" {
-			return encodeStringArray([]string{"REPLCONF", "ACK", "0"})
+			offset := fmt.Sprintf("%d", server.replOffset)
+			return encodeStringArray([]string{"REPLCONF", "ACK", offset})
 		}
 
 		return encodeSimpleString("OK")
@@ -626,7 +627,12 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 	case "PSYNC":
 		if server.role == "master" {
 			server.slaves = append(server.slaves, conn)
-			response := fmt.Sprintf("FULLRESYNC %s %d", server.replID, server.replOffset)
+
+			offset := server.replOffset
+			if args[2] == "-1" {
+				offset = 0
+			}
+			response := fmt.Sprintf("FULLRESYNC %s %d", server.replID, offset)
 			return encodeSimpleString(response)
 		}
 
@@ -635,7 +641,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		os.Exit(1)
 	}
 
-	if isWrite /* && command != "REPLCONF" && args[1] != "GETACK" */ {
+	if server.role == "master" && isWrite {
 		for _, slave := range server.slaves {
 			slave.Write([]byte(respCommand))
 		}
@@ -697,7 +703,7 @@ func main() {
 	if len(os.Args) == 5 && os.Args[3] == "--replicaof" {
 		parts := strings.SplitN(os.Args[4], " ", 2)
 		if parts[0] == "localhost" {
-			parts[0] = "0.0.0.0"
+			parts[0] = "127.0.0.1"
 		}
 		server.master = parts[0] + ":" + parts[1]
 
@@ -774,13 +780,17 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 		}
 
 		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue)
-		// if redisServer.role == "master" || (redisServer.role == "slave" && args[1] == "GETACK" && args[2] == "*") {
-		_, err = conn.Write([]byte(response))
-		if err != nil {
-			fmt.Println("Error sending response:", err.Error())
-			os.Exit(1)
+		redisServer.replOffset += len(respCommand)
+		// fmt.Printf("Processed [%s] command: %v, Updating offset to: %d\n", redisServer.role, args, redisServer.replOffset)
+		if redisServer.role == "master" ||
+			(redisServer.role == "slave" && conn.RemoteAddr().String() != redisServer.master) ||
+			(redisServer.role == "slave" && conn.RemoteAddr().String() == redisServer.master && args[0] == "REPLCONF" && args[1] == "GETACK") {
+			_, err = conn.Write([]byte(response))
+			if err != nil {
+				fmt.Println("Error sending response:", err.Error())
+				os.Exit(1)
+			}
 		}
-		// }
 
 		if command == "PSYNC" && redisServer.role == "master" {
 			rdb := fmt.Sprintf("$%d\r\n%s", len(emptyRDB), emptyRDB)
