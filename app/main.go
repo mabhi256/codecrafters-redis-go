@@ -616,6 +616,11 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 	case "REPLCONF":
 		// REPLCONF listening-port <PORT>
 		// REPLCONF capa psync2
+		// REPLCONF GETACK *
+		if server.role == "slave" && args[1] == "GETACK" && args[2] == "*" {
+			return encodeStringArray([]string{"REPLCONF", "ACK", "0"})
+		}
+
 		return encodeSimpleString("OK")
 
 	case "PSYNC":
@@ -664,7 +669,7 @@ func main() {
 	txnQueue := make(map[string][][]string) // connID -> array of args
 	execAbortQueue := make(map[string]bool)
 
-	server := RedisServer{
+	server := &RedisServer{
 		port:   "6379",
 		host:   "0.0.0.0:6379",
 		role:   "master",
@@ -707,7 +712,8 @@ func main() {
 		}
 		defer masterConn.Close()
 
-		go handleRequest(masterConn, &server, cache, txnQueue, execAbortQueue)
+		// execute replication commands from master
+		go handleRequest(masterConn, server, cache, txnQueue, execAbortQueue)
 	}
 
 	for {
@@ -717,7 +723,7 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, &server, cache, txnQueue, execAbortQueue)
+		go handleRequest(conn, server, cache, txnQueue, execAbortQueue)
 	}
 }
 
@@ -768,11 +774,13 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 		}
 
 		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue)
+		// if redisServer.role == "master" || (redisServer.role == "slave" && args[1] == "GETACK" && args[2] == "*") {
 		_, err = conn.Write([]byte(response))
 		if err != nil {
 			fmt.Println("Error sending response:", err.Error())
 			os.Exit(1)
 		}
+		// }
 
 		if command == "PSYNC" && redisServer.role == "master" {
 			rdb := fmt.Sprintf("$%d\r\n%s", len(emptyRDB), emptyRDB)
