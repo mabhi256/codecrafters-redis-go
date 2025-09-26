@@ -17,13 +17,15 @@ import (
 var emptyRDB []byte
 
 type RedisServer struct {
-	port       string
-	host       string
-	role       string
-	master     string
-	replID     string
-	replOffset int
-	slaves     map[net.Conn]int
+	port            string
+	host            string
+	role            string
+	master          string
+	replID          string
+	replOffset      int
+	slaves          map[net.Conn]int // slave -> offset
+	lastWriteOffset int
+	waitCh          chan int
 }
 
 type RedisValue interface {
@@ -136,11 +138,11 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	switch command {
 	case "PING":
-		return encodeSimpleString("PONG")
+		response = encodeSimpleString("PONG")
 
 	case "ECHO":
 		// ECHO <value>
-		return encodeBulkString(args[1])
+		response = encodeBulkString(args[1])
 
 	case "SET":
 		// SET <key> <value> (EX/PX <timeout-sec/ms>)
@@ -173,12 +175,12 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		entry, exists := cache.Get(key)
 
 		if !exists {
-			return encodeNullString()
+			response = encodeNullString()
 		} else if entry.IsExpired() {
 			cache.Del(key)
-			return encodeNullString()
+			response = encodeNullString()
 		} else {
-			return encodeBulkString(entry.(*StringEntry).value)
+			response = encodeBulkString(entry.(*StringEntry).value)
 		}
 
 	case "INCR":
@@ -197,7 +199,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			entryStr := entry.(*StringEntry)
 			entryInt, err2 := strconv.Atoi(entryStr.value)
 			if err2 != nil {
-				return encodeSimpleError("ERR value is not an integer or out of range")
+				response = encodeSimpleError("ERR value is not an integer or out of range")
+				break
 			}
 
 			entryInt++
@@ -259,11 +262,13 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		key := args[1]
 		start, err := strconv.Atoi(args[2])
 		if err != nil {
-			return encodeSimpleError("ERR value is not an integer or out of range")
+			response = encodeSimpleError("ERR value is not an integer or out of range")
+			break
 		}
 		stop, err := strconv.Atoi(args[3])
 		if err != nil {
-			return encodeSimpleError("ERR value is not an integer or out of range")
+			response = encodeSimpleError("ERR value is not an integer or out of range")
+			break
 		}
 
 		list, exists := cache.Get(key)
@@ -300,7 +305,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			length = len(entry.value)
 		}
 
-		return encodeInteger(length)
+		response = encodeInteger(length)
 
 	case "LPOP":
 		// LPOP <list-name> (<pop-count>)
@@ -311,7 +316,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		if len(args) == 3 {
 			count, err = strconv.Atoi(args[2])
 			if err != nil {
-				return encodeSimpleError("ERR value is not an integer or out of range")
+				response = encodeSimpleError("ERR value is not an integer or out of range")
+				break
 			}
 		}
 
@@ -346,7 +352,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		key := args[1]
 		timeout, err := strconv.ParseFloat(args[2], 64)
 		if err != nil {
-			return encodeSimpleError("ERR value is not an integer or out of range")
+			response = encodeSimpleError("ERR value is not an integer or out of range")
+			break
 		}
 
 		var timer <-chan time.Time
@@ -379,9 +386,9 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		entry, exists := cache.Get(key)
 
 		if exists {
-			return encodeSimpleString(entry.Type())
+			response = encodeSimpleString(entry.Type())
 		} else {
-			return encodeSimpleString("none")
+			response = encodeSimpleString("none")
 		}
 
 	case "XADD":
@@ -396,7 +403,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			entry = list.(*StreamEntry)
 
 			if err = ValidateStreamID(entryID, entry.lastID); err != nil {
-				return encodeSimpleError(err.(StreamIDError).message)
+				response = encodeSimpleError(err.(StreamIDError).message)
+				break
 			}
 			entryID, err = GenerateStreamID(entryID, entry.lastID)
 		} else {
@@ -439,7 +447,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		if endID != "+" && len(endParts) != 2 {
 			endIDms, err := strconv.ParseInt(endID, 10, 64)
 			if err != nil {
-				return encodeSimpleError("ERR value is not an integer or out of range")
+				response = encodeSimpleError("ERR value is not an integer or out of range")
+				break
 			}
 			endID = fmt.Sprintf("%d", endIDms+1)
 		}
@@ -466,7 +475,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 				rangeRes = append(rangeRes, []any{item.ID, item.Data})
 			}
 
-			return encodeAnyArray(rangeRes)
+			response = encodeAnyArray(rangeRes)
 		}
 
 	case "XREAD":
@@ -477,7 +486,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		if isBlocking {
 			blockMS, err = strconv.Atoi(args[2])
 			if err != nil {
-				return encodeSimpleError("ERR value is not an integer or out of range")
+				response = encodeSimpleError("ERR value is not an integer or out of range")
+				break
 			}
 			streamNameIdx = 4
 		}
@@ -504,7 +514,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 				seq, err := strconv.Atoi(parts[1])
 				if err != nil {
-					return encodeSimpleError("ERR value is not an integer or out of range")
+					response = encodeSimpleError("ERR value is not an integer or out of range")
+					break
 				}
 				startIDs[i] = fmt.Sprintf("%s-%d", parts[0], seq+1)
 
@@ -522,7 +533,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		}
 
 		if found {
-			return encodeAnyArray(readRes)
+			response = encodeAnyArray(readRes)
+			break
 		}
 
 		if isBlocking {
@@ -532,7 +544,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 				timer = time.After(time.Duration(blockMS) * time.Millisecond)
 			}
 
-			// blockingLoop:
+		blockingLoop:
 			for {
 				select {
 				case item := <-cache.blocking:
@@ -560,32 +572,34 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 					}
 
 					if found {
-						return encodeAnyArray(blockingReadRes)
-						// break blockingLoop
+						response = encodeAnyArray(blockingReadRes)
+						break blockingLoop
 					}
 
 				case <-timer:
-					return encodeNullArray()
-					// break blockingLoop
+					response = encodeNullArray()
+					break blockingLoop
 				}
 			}
 		}
 
 	case "MULTI":
 		txnQueue[connID] = [][]string{}
-		return encodeSimpleString("OK")
+		response = encodeSimpleString("OK")
 
 	case "EXEC":
 		tasks, exists := txnQueue[connID]
 
 		if !exists {
-			return encodeSimpleError("ERR EXEC without MULTI")
+			response = encodeSimpleError("ERR EXEC without MULTI")
+			break
 		}
 		delete(txnQueue, connID)
 
 		if execAbortQueue[connID] {
 			delete(execAbortQueue, connID)
-			return encodeSimpleError("EXECABORT Transaction discarded because of previous errors")
+			response = encodeSimpleError("EXECABORT Transaction discarded because of previous errors")
+			break
 		}
 
 		response = fmt.Sprintf("*%d\r\n", len(tasks))
@@ -598,19 +612,20 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		_, exists := txnQueue[connID]
 
 		if !exists {
-			return encodeSimpleError("ERR DISCARD without MULTI")
+			response = encodeSimpleError("ERR DISCARD without MULTI")
+			break
 		}
 		delete(txnQueue, connID)
 
-		return encodeSimpleString("OK")
+		response = encodeSimpleString("OK")
 
 	case "INFO":
 		// INFO replication
 		if args[1] == "replication" {
-			response := fmt.Sprintf("role:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d",
+			rep := fmt.Sprintf("role:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d",
 				server.role, server.replID, server.replOffset)
 
-			return encodeBulkString(response)
+			response = encodeBulkString(rep)
 		}
 
 	case "REPLCONF":
@@ -618,21 +633,25 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		// REPLCONF capa psync2
 		// REPLCONF GETACK *
 		if server.role == "slave" && args[1] == "GETACK" && args[2] == "*" {
+			fmt.Println("slave GETACK, replOffset:", server.replOffset, ", len(respCommand):", len(respCommand))
 			offset := fmt.Sprintf("%d", server.replOffset)
-			return encodeStringArray([]string{"REPLCONF", "ACK", offset})
+			response = encodeStringArray([]string{"REPLCONF", "ACK", offset})
+			break
 		}
 
 		if server.role == "master" && args[1] == "ACK" {
 			fmt.Println("Got ACK:", args)
-			// offset, err := strconv.Atoi(args[2])
-			// if err == nil {
-			// 	server.waitCh <- offset
-			// }
+			offset, err := strconv.Atoi(args[2])
+			if err == nil {
+				server.slaves[conn] = offset
+				server.waitCh <- offset
+			}
 
-			return "" // Dont sent response for ACK
+			response = "" // Dont sent response for ACK
+			break
 		}
 
-		return encodeSimpleString("OK")
+		response = encodeSimpleString("OK")
 
 	case "PSYNC":
 		if server.role == "master" {
@@ -641,8 +660,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 				offset = 0
 			}
 			server.slaves[conn] = offset
-			response := fmt.Sprintf("FULLRESYNC %s %d", server.replID, offset)
-			return encodeSimpleString(response)
+			res := fmt.Sprintf("FULLRESYNC %s %d", server.replID, offset)
+			response = encodeSimpleString(res)
 		}
 
 	case "WAIT":
@@ -650,55 +669,54 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		if server.role == "master" {
 			numReplicas, err := strconv.Atoi(args[1])
 			if err != nil {
-				return encodeSimpleError("ERR value is not an integer or out of range")
+				response = encodeSimpleError("ERR value is not an integer or out of range")
+				break
 			}
-			// timeout, err := strconv.Atoi(args[2])
-			// if err != nil {
-			// 	return encodeSimpleError("ERR value is not an integer or out of range")
+			timeout, err := strconv.Atoi(args[2])
+			if err != nil {
+				response = encodeSimpleError("ERR value is not an integer or out of range")
+				break
+			}
+
+			// if numReplicas == 0 {
+			// 	response = encodeInteger(numReplicas)
+			// 	break
 			// }
 
-			if numReplicas == 0 {
-				return encodeInteger(numReplicas)
+			if server.lastWriteOffset < 0 {
+				response = encodeInteger(len(server.slaves))
+				break
+			}
+
+			duration := time.Duration(timeout) * time.Millisecond
+			deadline := time.Now().Add(duration)
+
+			for slave := range server.slaves {
+				go func(slaveConn net.Conn) {
+					getAck(slaveConn, deadline)
+				}(slave)
 			}
 
 			var numAck int
-			for slave, offset := range server.slaves {
 
-				if offset == 0 {
-					numAck++
-				} else {
-					getAckCommand := encodeStringArray([]string{"REPLCONF", "GETACK", "*"})
-					slave.Write([]byte(getAckCommand))
-					reader := bufio.NewReader(slave)
-					res, _, err := receiveCommand(reader)
-					if err != nil {
-						fmt.Println("got error:", err.Error())
+		waitLoop:
+			for numAck <= len(server.slaves) {
+				select {
+				case slaveOffset := <-server.waitCh:
+					fmt.Println("slave-offset:", slaveOffset, ", lastWriteOffset:", server.lastWriteOffset)
+					if slaveOffset >= server.lastWriteOffset {
+						numAck++
 					}
-					fmt.Println(res)
+					if numAck == numReplicas {
+						response = encodeInteger(numAck)
+						break waitLoop
+					}
+
+				case <-time.After(duration):
+					response = encodeInteger(numAck)
+					break waitLoop
 				}
 			}
-
-			if numAck == len(server.slaves) {
-				return encodeInteger(numAck)
-			}
-
-			fmt.Println("xxxxxxxx")
-			// duration := time.Duration(timeout) * time.Millisecond
-
-			// for numAck <= len(server.slaves) {
-			// 	select {
-			// 	case slaveOffset := <-server.waitCh:
-			// 		if slaveOffset == server.replOffset {
-			// 			numAck++
-			// 		}
-			// 		if numAck == numReplicas {
-			// 			return encodeInteger(numAck)
-			// 		}
-
-			// 	case <-time.After(duration):
-			// 		return encodeInteger(numAck)
-			// 	}
-			// }
 		}
 
 	default:
@@ -707,6 +725,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 	}
 
 	if server.role == "master" && isWrite {
+		server.replOffset += len(respCommand)
+		server.lastWriteOffset = server.replOffset
 		for slave := range server.slaves {
 			go slave.Write([]byte(respCommand))
 		}
@@ -741,10 +761,12 @@ func main() {
 	execAbortQueue := make(map[string]bool)
 
 	server := &RedisServer{
-		port:   "6379",
-		host:   "0.0.0.0:6379",
-		role:   "master",
-		slaves: make(map[net.Conn]int),
+		port:            "6379",
+		host:            "0.0.0.0:6379",
+		role:            "master",
+		slaves:          make(map[net.Conn]int),
+		lastWriteOffset: -1,
+		waitCh:          make(chan int, 1),
 	}
 
 	server.replID, err = GenerateReplID()
@@ -845,7 +867,9 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 		}
 
 		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue)
-		redisServer.replOffset += len(respCommand)
+		if redisServer.role == "slave" {
+			redisServer.replOffset += len(respCommand)
+		}
 		// fmt.Printf("Processed [%s] command: %v, Updating offset to: %d\n", redisServer.role, args, redisServer.replOffset)
 		if redisServer.role == "master" ||
 			(redisServer.role == "slave" && conn.RemoteAddr().String() != redisServer.master) ||

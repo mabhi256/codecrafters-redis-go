@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (server *RedisServer) handshake() (net.Conn, error) {
@@ -76,4 +77,23 @@ func (server *RedisServer) handshake() (net.Conn, error) {
 	}
 
 	return conn, nil
+}
+
+func getAck(conn net.Conn, deadline time.Time) (int, error) {
+	fmt.Printf("sending getack to slave: %p\n", conn)
+
+	err := conn.SetDeadline(deadline)
+	if err != nil {
+		return -1, err
+	}
+	defer conn.SetDeadline(time.Time{}) // clear
+
+	ackCommand := encodeStringArray([]string{"REPLCONF", "GETACK", "*"})
+	n, err := conn.Write([]byte(ackCommand))
+	if err != nil {
+		return -1, err
+	}
+	fmt.Printf("wrote %d bytes\n", n)
+
+	return n, err
 }
