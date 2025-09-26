@@ -23,7 +23,7 @@ type RedisServer struct {
 	master     string
 	replID     string
 	replOffset int
-	slaves     []net.Conn
+	slaves     map[net.Conn]int
 }
 
 type RedisValue interface {
@@ -622,16 +622,25 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			return encodeStringArray([]string{"REPLCONF", "ACK", offset})
 		}
 
+		if server.role == "master" && args[1] == "ACK" {
+			fmt.Println("Got ACK:", args)
+			// offset, err := strconv.Atoi(args[2])
+			// if err == nil {
+			// 	server.waitCh <- offset
+			// }
+
+			return "" // Dont sent response for ACK
+		}
+
 		return encodeSimpleString("OK")
 
 	case "PSYNC":
 		if server.role == "master" {
-			server.slaves = append(server.slaves, conn)
-
 			offset := server.replOffset
 			if args[2] == "-1" {
 				offset = 0
 			}
+			server.slaves[conn] = offset
 			response := fmt.Sprintf("FULLRESYNC %s %d", server.replID, offset)
 			return encodeSimpleString(response)
 		}
@@ -643,14 +652,53 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			if err != nil {
 				return encodeSimpleError("ERR value is not an integer or out of range")
 			}
-			_, err = strconv.Atoi(args[2])
-			if err != nil {
-				return encodeSimpleError("ERR value is not an integer or out of range")
-			}
+			// timeout, err := strconv.Atoi(args[2])
+			// if err != nil {
+			// 	return encodeSimpleError("ERR value is not an integer or out of range")
+			// }
 
 			if numReplicas == 0 {
 				return encodeInteger(numReplicas)
 			}
+
+			var numAck int
+			for slave, offset := range server.slaves {
+
+				if offset == 0 {
+					numAck++
+				} else {
+					getAckCommand := encodeStringArray([]string{"REPLCONF", "GETACK", "*"})
+					slave.Write([]byte(getAckCommand))
+					reader := bufio.NewReader(slave)
+					res, _, err := receiveCommand(reader)
+					if err != nil {
+						fmt.Println("got error:", err.Error())
+					}
+					fmt.Println(res)
+				}
+			}
+
+			if numAck == len(server.slaves) {
+				return encodeInteger(numAck)
+			}
+
+			fmt.Println("xxxxxxxx")
+			// duration := time.Duration(timeout) * time.Millisecond
+
+			// for numAck <= len(server.slaves) {
+			// 	select {
+			// 	case slaveOffset := <-server.waitCh:
+			// 		if slaveOffset == server.replOffset {
+			// 			numAck++
+			// 		}
+			// 		if numAck == numReplicas {
+			// 			return encodeInteger(numAck)
+			// 		}
+
+			// 	case <-time.After(duration):
+			// 		return encodeInteger(numAck)
+			// 	}
+			// }
 		}
 
 	default:
@@ -659,8 +707,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 	}
 
 	if server.role == "master" && isWrite {
-		for _, slave := range server.slaves {
-			slave.Write([]byte(respCommand))
+		for slave := range server.slaves {
+			go slave.Write([]byte(respCommand))
 		}
 	}
 
@@ -696,7 +744,7 @@ func main() {
 		port:   "6379",
 		host:   "0.0.0.0:6379",
 		role:   "master",
-		slaves: []net.Conn{},
+		slaves: make(map[net.Conn]int),
 	}
 
 	server.replID, err = GenerateReplID()
