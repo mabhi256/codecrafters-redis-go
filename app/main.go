@@ -122,7 +122,8 @@ func validateCommand(args []string) error {
 
 func (server *RedisServer) execute(args []string, respCommand string, conn net.Conn,
 	cache *RedisCache,
-	txnQueue map[string][][]string, execAbortQueue map[string]bool, rdbCache map[string]string,
+	txnQueue map[string][][]string, execAbortQueue map[string]bool,
+	rdbCache map[string]string, rdbExpiry map[string]int64,
 ) string {
 	command := args[0]
 	connID := fmt.Sprintf("%p", conn)
@@ -169,7 +170,10 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 		if rdbCache != nil {
 			entry, exists := rdbCache[key]
+			expiry, expExists := rdbExpiry[key]
 			if !exists {
+				response = encodeNullString()
+			} else if expExists && expiry < time.Now().UnixMilli() {
 				response = encodeNullString()
 			} else {
 				response = encodeBulkString(entry)
@@ -609,7 +613,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		response = fmt.Sprintf("*%d\r\n", len(tasks))
 
 		for _, task := range tasks {
-			response += server.execute(task, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache)
+			response += server.execute(task, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
 		}
 
 	case "DISCARD":
@@ -816,9 +820,9 @@ func main() {
 	}
 
 	var rdbCache map[string]string
-	// var rdbExpiry map[string]int64
+	var rdbExpiry map[string]int64
 	if dbFilename != "" {
-		rdbCache, _, err = server.ParseRdb()
+		rdbCache, rdbExpiry, err = server.ParseRdb()
 		if err != nil {
 			fmt.Println("rdb file error:", err.Error())
 		}
@@ -859,7 +863,7 @@ func main() {
 		defer masterConn.Close()
 
 		// execute replication commands from master
-		go handleRequest(masterConn, server, cache, txnQueue, execAbortQueue, rdbCache)
+		go handleRequest(masterConn, server, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
 	}
 
 	l, err = net.Listen("tcp", server.host)
@@ -876,14 +880,14 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, server, cache, txnQueue, execAbortQueue, rdbCache)
+		go handleRequest(conn, server, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
 	}
 }
 
 func handleRequest(conn net.Conn, redisServer *RedisServer,
 	cache *RedisCache,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
-	rdbCache map[string]string,
+	rdbCache map[string]string, rdbExpiry map[string]int64,
 ) {
 	if redisServer.role == "master" {
 		defer conn.Close()
@@ -927,7 +931,7 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 			continue
 		}
 
-		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache)
+		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
 
 		// fmt.Printf("Processed [%s] command: %v, Updating offset to: %d\n", redisServer.role, args, redisServer.replOffset)
 		if redisServer.role == "master" ||
