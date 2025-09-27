@@ -110,6 +110,8 @@ func encodeAnyArray(values []any) string {
 		switch value := value.(type) {
 		case string:
 			encoded += encodeBulkString(value)
+		case int:
+			encoded += encodeInteger(value)
 		case []string:
 			encoded += encodeStringArray(value)
 		case []any:

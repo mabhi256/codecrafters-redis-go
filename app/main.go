@@ -743,6 +743,10 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			response = encodeStringArray(keys)
 		}
 
+	case "SUBSCRIBE":
+		channelName := args[1]
+		response = encodeAnyArray([]any{"subscribe", channelName, 1})
+
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
@@ -949,3 +953,7 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 		}
 	}
 }
+
+// todo: Implement save to create dump file
+// todo: keep main hashmap as map[string]{objType, valueEncoding} and a separate expiry hashmap
+// load main & expiry hashmap from rdb at start (we have string, list, stream, sorted-set, pub/sub, geo)
