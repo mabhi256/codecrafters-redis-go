@@ -13,9 +13,6 @@ import (
 	"time"
 )
 
-//go:embed empty.rdb
-var emptyRDB []byte
-
 type RedisServer struct {
 	port            string
 	host            string
@@ -28,11 +25,6 @@ type RedisServer struct {
 	waitCh          chan int
 	dir             string
 	dbFilename      string
-}
-
-type RedisValue interface {
-	Type() string
-	IsExpired() bool
 }
 
 type BlockingItem struct {
@@ -130,7 +122,7 @@ func validateCommand(args []string) error {
 
 func (server *RedisServer) execute(args []string, respCommand string, conn net.Conn,
 	cache *RedisCache,
-	txnQueue map[string][][]string, execAbortQueue map[string]bool,
+	txnQueue map[string][][]string, execAbortQueue map[string]bool, rdbCache map[string]string,
 ) string {
 	command := args[0]
 	connID := fmt.Sprintf("%p", conn)
@@ -607,7 +599,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		response = fmt.Sprintf("*%d\r\n", len(tasks))
 
 		for _, task := range tasks {
-			response += server.execute(task, respCommand, conn, cache, txnQueue, execAbortQueue)
+			response += server.execute(task, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache)
 		}
 
 	case "DISCARD":
@@ -728,6 +720,15 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			}
 		}
 
+	case "KEYS":
+		if args[1] == "*" {
+			var keys []string
+			for key := range rdbCache {
+				keys = append(keys, key)
+			}
+			response = encodeStringArray(keys)
+		}
+
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
@@ -804,6 +805,24 @@ func main() {
 		dbFilename:      dbFilename,
 	}
 
+	var rdbCache map[string]string
+	var rdbExpiry map[string]int64
+	if dbFilename != "" {
+		rdbCache, rdbExpiry, err = server.ParseRdb()
+		if err != nil {
+			fmt.Println("rdb file error:", err.Error())
+		}
+		fmt.Println("Cache:")
+		for key, value := range rdbCache {
+			if expiry, exists := rdbExpiry[key]; exists {
+				fmt.Printf("%s -> %v {expiry: %d}\n", key, value, expiry)
+			} else {
+				fmt.Printf("%s -> %v\n", key, value)
+			}
+		}
+		fmt.Println()
+	}
+
 	if role == "master" {
 		server.replID, err = GenerateReplID()
 		if err != nil {
@@ -830,7 +849,7 @@ func main() {
 		defer masterConn.Close()
 
 		// execute replication commands from master
-		go handleRequest(masterConn, server, cache, txnQueue, execAbortQueue)
+		go handleRequest(masterConn, server, cache, txnQueue, execAbortQueue, rdbCache)
 	}
 
 	l, err = net.Listen("tcp", server.host)
@@ -847,13 +866,14 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, server, cache, txnQueue, execAbortQueue)
+		go handleRequest(conn, server, cache, txnQueue, execAbortQueue, rdbCache)
 	}
 }
 
 func handleRequest(conn net.Conn, redisServer *RedisServer,
 	cache *RedisCache,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
+	rdbCache map[string]string,
 ) {
 	if redisServer.role == "master" {
 		defer conn.Close()
@@ -897,7 +917,7 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 			continue
 		}
 
-		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue)
+		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache)
 
 		// fmt.Printf("Processed [%s] command: %v, Updating offset to: %d\n", redisServer.role, args, redisServer.replOffset)
 		if redisServer.role == "master" ||
@@ -910,13 +930,8 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 			}
 		}
 
-		if command == "PSYNC" && redisServer.role == "master" {
-			rdb := fmt.Sprintf("$%d\r\n%s", len(emptyRDB), emptyRDB)
-			_, err = conn.Write([]byte(rdb))
-			if err != nil {
-				fmt.Println("Error sending response:", err.Error())
-				os.Exit(1)
-			}
+		if command == "PSYNC" {
+			redisServer.propagateEmptyRDB(conn)
 		}
 	}
 }

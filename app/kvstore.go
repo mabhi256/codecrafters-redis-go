@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+type RedisValue interface {
+	Type() string
+	IsExpired() bool
+}
+
 type StringEntry struct {
 	value  string
 	expiry int64 // in ms
