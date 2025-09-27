@@ -26,6 +26,8 @@ type RedisServer struct {
 	slaves          map[net.Conn]int // slave -> offset
 	lastWriteOffset int
 	waitCh          chan int
+	dir             string
+	dbFilename      string
 }
 
 type RedisValue interface {
@@ -633,14 +635,12 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		// REPLCONF capa psync2
 		// REPLCONF GETACK *
 		if server.role == "slave" && args[1] == "GETACK" && args[2] == "*" {
-			fmt.Println("slave GETACK, replOffset:", server.replOffset, ", len(respCommand):", len(respCommand))
 			offset := fmt.Sprintf("%d", server.replOffset)
 			response = encodeStringArray([]string{"REPLCONF", "ACK", offset})
 			break
 		}
 
 		if server.role == "master" && args[1] == "ACK" {
-			fmt.Println("Got ACK:", args)
 			offset, err := strconv.Atoi(args[2])
 			if err == nil {
 				server.slaves[conn] = offset
@@ -703,7 +703,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			for numAck <= len(server.slaves) {
 				select {
 				case slaveOffset := <-server.waitCh:
-					fmt.Println("slave-offset:", slaveOffset, ", lastWriteOffset:", server.lastWriteOffset)
 					if slaveOffset >= server.lastWriteOffset {
 						numAck++
 					}
@@ -719,6 +718,16 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			}
 		}
 
+	case "CONFIG":
+		if args[1] == "GET" {
+			switch args[2] {
+			case "dir":
+				response = encodeStringArray([]string{"dir", server.dir})
+			case "dbfilename":
+				response = encodeStringArray([]string{"dbfilename", server.dbFilename})
+			}
+		}
+
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
@@ -730,6 +739,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		for slave := range server.slaves {
 			go slave.Write([]byte(respCommand))
 		}
+	} else if server.role == "slave" {
+		server.replOffset += len(respCommand)
 	}
 
 	return response
@@ -760,41 +771,54 @@ func main() {
 	txnQueue := make(map[string][][]string) // connID -> array of args
 	execAbortQueue := make(map[string]bool)
 
+	argIdx := 1
+	port := "6379"
+	role := "master"
+	var replicaOf, dir, dbFilename string
+	for argIdx < len(os.Args) {
+		switch os.Args[argIdx] {
+		case "--port":
+			port = os.Args[argIdx+1]
+
+		case "--replicaof":
+			role = "slave"
+			replicaOf = os.Args[argIdx+1]
+
+		case "--dir":
+			dir = os.Args[argIdx+1]
+
+		case "--dbfilename":
+			dbFilename = os.Args[argIdx+1]
+		}
+		argIdx += 2
+	}
+
 	server := &RedisServer{
-		port:            "6379",
-		host:            "0.0.0.0:6379",
-		role:            "master",
+		port:            port,
+		host:            "0.0.0.0:" + port,
+		role:            role,
 		slaves:          make(map[net.Conn]int),
 		lastWriteOffset: -1,
 		waitCh:          make(chan int, 1),
+		dir:             dir,
+		dbFilename:      dbFilename,
 	}
 
-	server.replID, err = GenerateReplID()
-	if err != nil {
-		fmt.Println("Failed to generate replication ID")
-		os.Exit(1)
+	if role == "master" {
+		server.replID, err = GenerateReplID()
+		if err != nil {
+			fmt.Println("Failed to generate replication ID")
+			os.Exit(1)
+		}
 	}
 
-	if len(os.Args) >= 3 && os.Args[1] == "--port" {
-		server.port = os.Args[2]
-		server.host = "0.0.0.0:" + os.Args[2]
-	}
-
-	l, err = net.Listen("tcp", server.host)
-	if err != nil {
-		fmt.Println("Failed to bind to port 6379")
-		os.Exit(1)
-	}
-	defer l.Close()
-
-	if len(os.Args) == 5 && os.Args[3] == "--replicaof" {
-		parts := strings.SplitN(os.Args[4], " ", 2)
+	if role == "slave" {
+		parts := strings.SplitN(replicaOf, " ", 2)
 		if parts[0] == "localhost" {
 			parts[0] = "127.0.0.1"
 		}
 		server.master = parts[0] + ":" + parts[1]
 
-		server.role = "slave"
 		server.replID = "?"
 		server.replOffset = -1
 
@@ -808,6 +832,13 @@ func main() {
 		// execute replication commands from master
 		go handleRequest(masterConn, server, cache, txnQueue, execAbortQueue)
 	}
+
+	l, err = net.Listen("tcp", server.host)
+	if err != nil {
+		fmt.Println("Failed to bind to port 6379")
+		os.Exit(1)
+	}
+	defer l.Close()
 
 	for {
 		conn, err := l.Accept()
@@ -867,9 +898,7 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 		}
 
 		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue)
-		if redisServer.role == "slave" {
-			redisServer.replOffset += len(respCommand)
-		}
+
 		// fmt.Printf("Processed [%s] command: %v, Updating offset to: %d\n", redisServer.role, args, redisServer.replOffset)
 		if redisServer.role == "master" ||
 			(redisServer.role == "slave" && conn.RemoteAddr().String() != redisServer.master) ||
