@@ -153,11 +153,11 @@ func (rp *RdbParser) Parse() (map[string]string, map[string]int64, error) {
 	}
 
 	// RDB version 4 bytes
-	version, err := rp.readNBytes(4)
+	_, err = rp.readNBytes(4)
 	if err != nil {
 		return nil, nil, err
 	}
-	fmt.Printf("RDB version: %s\n", string(version))
+	// fmt.Printf("RDB version: %s\n", string(version))
 
 	expiry := int64(-1)
 
@@ -179,27 +179,26 @@ parseLoop:
 				return nil, nil, err
 			}
 			auxiliary[key] = value
-			fmt.Println(key, "->", value)
 
 		case 0xFE: // SELECTDB, database selector (id)
-			numDb, _, err := rp.readLength()
+			_, _, err := rp.readLength()
 			if err != nil {
 				return nil, nil, err
 			}
-			fmt.Printf("Database#%d\n\n", numDb)
+			// fmt.Printf("Database#%d\n\n", numDb)
 
 		case 0xFB: // RESIZEDB, Hash table sizes for the main keyspace and expires
-			hashTableSize, _, err := rp.readLength()
+			_, _, err := rp.readLength()
 			if err != nil {
 				return nil, nil, err
 			}
-			fmt.Printf("Hash table size: %d\n", hashTableSize)
+			// fmt.Printf("Hash table size: %d\n", hashTableSize)
 
-			expireTableSize, _, err := rp.readLength()
+			_, _, err = rp.readLength()
 			if err != nil {
 				return nil, nil, err
 			}
-			fmt.Printf("Expire table size: %d\n\n", expireTableSize)
+			// fmt.Printf("Expire table size: %d\n\n", expireTableSize)
 
 		case 0xFD: // EXPIRETIME, Expire time in seconds
 			expBytes, err := rp.readNBytes(4)
@@ -246,11 +245,11 @@ parseLoop:
 		}
 	}
 
-	fmt.Println("Auxiliary fields:")
-	for key, value := range auxiliary {
-		fmt.Println(key, "->", value)
-	}
-	fmt.Println()
+	// fmt.Println("Auxiliary fields:")
+	// for key, value := range auxiliary {
+	// 	fmt.Println(key, "->", value)
+	// }
+	// fmt.Println()
 
 	return cache, expiryMap, nil
 }

@@ -166,15 +166,25 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 	case "GET":
 		// GET <key>
 		key := args[1]
-		entry, exists := cache.Get(key)
 
-		if !exists {
-			response = encodeNullString()
-		} else if entry.IsExpired() {
-			cache.Del(key)
-			response = encodeNullString()
+		if rdbCache != nil {
+			entry, exists := rdbCache[key]
+			if !exists {
+				response = encodeNullString()
+			} else {
+				response = encodeBulkString(entry)
+			}
 		} else {
-			response = encodeBulkString(entry.(*StringEntry).value)
+			entry, exists := cache.Get(key)
+
+			if !exists {
+				response = encodeNullString()
+			} else if entry.IsExpired() {
+				cache.Del(key)
+				response = encodeNullString()
+			} else {
+				response = encodeBulkString(entry.(*StringEntry).value)
+			}
 		}
 
 	case "INCR":
@@ -806,21 +816,21 @@ func main() {
 	}
 
 	var rdbCache map[string]string
-	var rdbExpiry map[string]int64
+	// var rdbExpiry map[string]int64
 	if dbFilename != "" {
-		rdbCache, rdbExpiry, err = server.ParseRdb()
+		rdbCache, _, err = server.ParseRdb()
 		if err != nil {
 			fmt.Println("rdb file error:", err.Error())
 		}
-		fmt.Println("Cache:")
-		for key, value := range rdbCache {
-			if expiry, exists := rdbExpiry[key]; exists {
-				fmt.Printf("%s -> %v {expiry: %d}\n", key, value, expiry)
-			} else {
-				fmt.Printf("%s -> %v\n", key, value)
-			}
-		}
-		fmt.Println()
+		// fmt.Println("Cache:")
+		// for key, value := range rdbCache {
+		// 	if expiry, exists := rdbExpiry[key]; exists {
+		// 		fmt.Printf("%s -> %v {expiry: %d}\n", key, value, expiry)
+		// 	} else {
+		// 		fmt.Printf("%s -> %v\n", key, value)
+		// 	}
+		// }
+		// fmt.Println()
 	}
 
 	if role == "master" {
