@@ -25,6 +25,7 @@ type RedisServer struct {
 	waitCh          chan int
 	dir             string
 	dbFilename      string
+	subxns          map[net.Conn]map[string]bool // subscriptions: conn -> set of channels
 }
 
 type BlockingItem struct {
@@ -745,7 +746,13 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "SUBSCRIBE":
 		channelName := args[1]
-		response = encodeAnyArray([]any{"subscribe", channelName, 1})
+		_, subExists := server.subxns[conn]
+		if !subExists {
+			server.subxns[conn] = make(map[string]bool)
+		}
+		server.subxns[conn][channelName] = true
+
+		response = encodeAnyArray([]any{"subscribe", channelName, len(server.subxns[conn])})
 
 	default:
 		fmt.Println("Unknown command:", command)
@@ -821,6 +828,7 @@ func main() {
 		waitCh:          make(chan int, 1),
 		dir:             dir,
 		dbFilename:      dbFilename,
+		subxns:          make(map[net.Conn]map[string]bool),
 	}
 
 	var rdbCache map[string]string
