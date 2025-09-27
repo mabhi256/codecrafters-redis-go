@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	_ "embed"
 	"encoding/binary"
 	"fmt"
@@ -30,9 +31,9 @@ type RdbParser struct {
 	pos    int
 }
 
-func NewRdbParser(r io.Reader) *RdbParser {
+func NewRdbParser(data []byte) *RdbParser {
 	return &RdbParser{
-		reader: bufio.NewReader(r),
+		reader: bufio.NewReader(bytes.NewReader(data)),
 		pos:    0,
 	}
 }
@@ -254,14 +255,36 @@ parseLoop:
 	return cache, expiryMap, nil
 }
 
+func verifyCRC64(data []byte) error {
+	if len(data) < 8 {
+		return fmt.Errorf("invalid rdb file, too short")
+	}
+
+	storedCRCbytes := data[len(data)-8:]
+	storedCRC := binary.LittleEndian.Uint64(storedCRCbytes)
+
+	computedCRC := Digest(data[:len(data)-8])
+
+	if storedCRC != computedCRC {
+		return fmt.Errorf("invalid rdb file, CRC mismatch: stored=0x%x, computed=0x%x", storedCRC, computedCRC)
+	}
+
+	return nil
+}
+
 func (server *RedisServer) ParseRdb() (map[string]string, map[string]int64, error) {
-	file, err := os.Open(filepath.Join(server.dir, server.dbFilename))
+	data, err := os.ReadFile(filepath.Join(server.dir, server.dbFilename))
 	if err != nil {
 		return nil, nil, err
 	}
-	defer file.Close()
 
-	parser := NewRdbParser(file)
+	if err := verifyCRC64(data); err != nil {
+		return nil, nil, err
+	}
+
+	// No need to have a streaming parser by reading os.Open(filepath),
+	// since all our data will load in the ram anyway
+	parser := NewRdbParser(data)
 	cache, expiry, err := parser.Parse()
 	if err != nil {
 		return nil, nil, err
