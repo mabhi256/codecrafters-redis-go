@@ -158,7 +158,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 	var response string
 	var err error
 
-	if server.IsSubscribed(conn) {
+	isSubscribedMode := server.IsSubscribed(conn)
+	if isSubscribedMode {
 		if !IsSubscribedModeCommand(command) {
 			response = fmt.Sprintf("ERR Can't execute '%s': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context",
 				command)
@@ -168,7 +169,11 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	switch command {
 	case "PING":
-		response = encodeSimpleString("PONG")
+		if isSubscribedMode {
+			response = encodeStringArray([]string{"pong", ""})
+		} else {
+			response = encodeSimpleString("PONG")
+		}
 
 	case "ECHO":
 		// ECHO <value>
@@ -773,7 +778,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "SUBSCRIBE":
 		channelName := args[1]
-		if !server.IsSubscribed(conn) {
+		if !isSubscribedMode {
 			server.subxns[conn] = make(map[string]bool)
 		}
 		server.subxns[conn][channelName] = true
