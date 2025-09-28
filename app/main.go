@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -116,6 +117,30 @@ func validateCommand(args []string) error {
 		if len(args) != 1 {
 			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
 		}
+
+	case "PSYNC":
+		// PSYNC <replicationid> <offset>
+		if len(args) != 3 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "WAIT":
+		// WAIT <numreplicas> <timeout-ms>
+		if len(args) != 3 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "KEYS":
+		// KEYS <pattern>
+		if len(args) != 2 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
+
+	case "SUBSCRIBE":
+		// SUBSCRIBE <channel>
+		if len(args) != 2 {
+			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+		}
 	}
 
 	return nil
@@ -128,7 +153,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 ) string {
 	command := args[0]
 	connID := fmt.Sprintf("%p", conn)
-	isWrite := false
 	var response string
 	var err error
 
@@ -142,7 +166,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "SET":
 		// SET <key> <value> (EX/PX <timeout-sec/ms>)
-		isWrite = true
 		expiryMs := int64(-1)
 		if len(args) == 5 {
 			expiry, err := strconv.Atoi(args[4])
@@ -194,7 +217,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "INCR":
 		// INCR <key>
-		isWrite = true
 		key := args[1]
 		entry, exists := cache.Get(key)
 
@@ -222,7 +244,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "RPUSH":
 		// RPUSH <list-name> <values>...
-		isWrite = true
 		key := args[1]
 		list, exists := cache.Get(key)
 
@@ -245,7 +266,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "LPUSH":
 		// LPUSH <list-name> <values>...
-		isWrite = true
 		key := args[1]
 		list, exists := cache.Get(key)
 
@@ -318,7 +338,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "LPOP":
 		// LPOP <list-name> (<pop-count>)
-		isWrite = true
 		key := args[1]
 		count := 1
 		var err error
@@ -357,7 +376,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "BLPOP":
 		// BLPOP <list-name> <timeout>
-		isWrite = true
 		key := args[1]
 		timeout, err := strconv.ParseFloat(args[2], 64)
 		if err != nil {
@@ -402,7 +420,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "XADD":
 		// XADD <stream-key> <entry-id> <key1> <value1> ...
-		isWrite = true
 		streamKey := args[1]
 		entryID := args[2]
 
@@ -759,12 +776,9 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		os.Exit(1)
 	}
 
-	if server.role == "master" && isWrite {
+	if server.role == "master" && isWrite(command) {
 		server.replOffset += len(respCommand)
 		server.lastWriteOffset = server.replOffset
-		for slave := range server.slaves {
-			go slave.Write([]byte(respCommand))
-		}
 	} else if server.role == "slave" {
 		server.replOffset += len(respCommand)
 	}
@@ -781,6 +795,12 @@ func GenerateReplID() (string, error) {
 	}
 
 	return fmt.Sprintf("%x", bytes), nil
+}
+
+func isWrite(command string) bool {
+	writeCommands := []string{"SET", "INCR", "RPUSH", "LPUSH", "LPOP", "BLPOP", "XADD"}
+
+	return slices.Contains(writeCommands, command)
 }
 
 func main() {
@@ -896,12 +916,12 @@ func main() {
 	}
 }
 
-func handleRequest(conn net.Conn, redisServer *RedisServer,
+func handleRequest(conn net.Conn, server *RedisServer,
 	cache *RedisCache,
 	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 	rdbCache map[string]string, rdbExpiry map[string]int64,
 ) {
-	if redisServer.role == "master" {
+	if server.role == "master" {
 		defer conn.Close()
 	}
 
@@ -943,12 +963,13 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 			continue
 		}
 
-		response := redisServer.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
+		response := server.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
 
 		// fmt.Printf("Processed [%s] command: %v, Updating offset to: %d\n", redisServer.role, args, redisServer.replOffset)
-		if redisServer.role == "master" ||
-			(redisServer.role == "slave" && conn.RemoteAddr().String() != redisServer.master) ||
-			(redisServer.role == "slave" && conn.RemoteAddr().String() == redisServer.master && args[0] == "REPLCONF" && args[1] == "GETACK") {
+		// respond to client
+		if server.role == "master" ||
+			(server.role == "slave" && conn.RemoteAddr().String() != server.master) ||
+			(server.role == "slave" && conn.RemoteAddr().String() == server.master && args[0] == "REPLCONF" && args[1] == "GETACK") {
 			_, err = conn.Write([]byte(response))
 			if err != nil {
 				fmt.Println("Error sending response:", err.Error())
@@ -956,8 +977,16 @@ func handleRequest(conn net.Conn, redisServer *RedisServer,
 			}
 		}
 
-		if command == "PSYNC" {
-			redisServer.propagateEmptyRDB(conn)
+		// propagate to replicas if necessary
+		if server.role == "master" {
+			if command == "PSYNC" {
+				server.propagateEmptyRDB(conn)
+			}
+			if isWrite(command) {
+				for slave := range server.slaves {
+					go slave.Write([]byte(respCommand))
+				}
+			}
 		}
 	}
 }

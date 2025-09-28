@@ -16,13 +16,11 @@ import (
 var emptyRDB []byte
 
 func (server *RedisServer) propagateEmptyRDB(conn net.Conn) {
-	if server.role == "master" {
-		rdb := fmt.Sprintf("$%d\r\n%s", len(emptyRDB), emptyRDB)
-		_, err := conn.Write([]byte(rdb))
-		if err != nil {
-			fmt.Println("Error sending response:", err.Error())
-			os.Exit(1)
-		}
+	rdb := fmt.Sprintf("$%d\r\n%s", len(emptyRDB), emptyRDB)
+	_, err := conn.Write([]byte(rdb))
+	if err != nil {
+		fmt.Println("Error sending response:", err.Error())
+		os.Exit(1)
 	}
 }
 
