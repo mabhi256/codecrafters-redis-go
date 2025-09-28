@@ -37,15 +37,17 @@ type BlockingItem struct {
 func validateCommand(args []string) error {
 	command := args[0]
 
+	err := fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+
 	switch command {
 	case "ECHO":
 		if len(args) != 2 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "SET":
 		if len(args) < 3 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 		if len(args) == 5 {
 			if strings.ToUpper(args[3]) != "EX" && strings.ToUpper(args[3]) != "PX" {
@@ -55,91 +57,91 @@ func validateCommand(args []string) error {
 
 	case "GET":
 		if len(args) != 2 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "INCR":
 		if len(args) != 2 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "RPUSH":
 		if len(args) < 3 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "LPUSH":
 		if len(args) < 3 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "LRANGE":
 		if len(args) < 4 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "LLEN":
 		if len(args) != 2 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "LPOP":
 		if len(args) < 2 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "BLPOP":
 		if len(args) != 3 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "TYPE":
 		if len(args) != 2 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "XADD":
 		if len(args) < 5 || len(args)%2 == 0 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "XRANGE":
 		if len(args) != 4 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "XREAD":
 		if len(args) < 4 || len(args)%2 != 0 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "DISCARD":
 		if len(args) != 1 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "PSYNC":
 		// PSYNC <replicationid> <offset>
 		if len(args) != 3 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "WAIT":
 		// WAIT <numreplicas> <timeout-ms>
 		if len(args) != 3 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "KEYS":
 		// KEYS <pattern>
 		if len(args) != 2 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 
 	case "SUBSCRIBE":
 		// SUBSCRIBE <channel>
 		if len(args) != 2 {
-			return fmt.Errorf("ERR wrong number of arguments for '%s' command", command)
+			return err
 		}
 	}
 
@@ -155,6 +157,14 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 	connID := fmt.Sprintf("%p", conn)
 	var response string
 	var err error
+
+	if server.IsSubscribed(conn) {
+		if !IsSubscribedModeCommand(command) {
+			response = fmt.Sprintf("ERR Can't execute '%s': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context",
+				command)
+			return encodeSimpleError(response)
+		}
+	}
 
 	switch command {
 	case "PING":
@@ -763,8 +773,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 	case "SUBSCRIBE":
 		channelName := args[1]
-		_, subExists := server.subxns[conn]
-		if !subExists {
+		if !server.IsSubscribed(conn) {
 			server.subxns[conn] = make(map[string]bool)
 		}
 		server.subxns[conn][channelName] = true
