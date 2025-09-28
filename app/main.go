@@ -1011,9 +1011,15 @@ func handleRequest(conn net.Conn, server *RedisServer,
 		}
 
 		if command == "PUBLISH" {
-			// channel := args[1]
-			// message := args[2]
-			// server.subscribeCh[channel]
+			channel := args[1]
+			notification := encodeStringArray([]string{"message", channel, args[2]})
+			for _, subscriber := range server.subscribeCh[channel] {
+				_, err = subscriber.Write([]byte(notification))
+				if err != nil {
+					fmt.Println("Error sending response:", err.Error())
+					os.Exit(1)
+				}
+			}
 
 		}
 
