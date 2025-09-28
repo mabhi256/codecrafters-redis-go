@@ -6,7 +6,7 @@ import (
 )
 
 func (server *RedisServer) IsSubscribed(conn net.Conn) bool {
-	_, subExists := server.subscribers[conn]
+	_, subExists := server.clientChannels[conn]
 	return subExists
 }
 

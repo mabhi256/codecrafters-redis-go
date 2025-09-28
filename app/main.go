@@ -26,8 +26,10 @@ type RedisServer struct {
 	waitCh          chan int
 	dir             string
 	dbFilename      string
-	subscribers     map[net.Conn]map[string]bool // conn -> set of
-	subscribeCh     map[string][]net.Conn
+
+	// Pub/Sub mappings
+	clientChannels map[net.Conn]map[string]bool // client -> channels they're subscribed to
+	channelClients map[string]map[net.Conn]bool // channel -> clients subscribed to it
 }
 
 type BlockingItem struct {
@@ -148,6 +150,12 @@ func validateCommand(args []string) error {
 	case "PUBLISH":
 		// PUBLISH <channel> <message>
 		if len(args) != 3 {
+			return err
+		}
+
+	case "UNSUBSCRIBE":
+		// UNSUBSCRIBE <channel>
+		if len(args) != 2 {
 			return err
 		}
 	}
@@ -786,22 +794,31 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 	case "SUBSCRIBE":
 		channel := args[1]
 		if !isSubscribed {
-			server.subscribers[conn] = make(map[string]bool)
-			server.subscribeCh[channel] = append(server.subscribeCh[channel], conn)
+			server.clientChannels[conn] = make(map[string]bool)
 		}
-		server.subscribers[conn][channel] = true
+		if _, exists := server.channelClients[channel]; !exists {
+			server.channelClients[channel] = make(map[net.Conn]bool)
+		}
+		server.clientChannels[conn][channel] = true
+		server.channelClients[channel][conn] = true
 
-		response = encodeAnyArray([]any{"subscribe", channel, len(server.subscribers[conn])})
+		response = encodeAnyArray([]any{"subscribe", channel, len(server.clientChannels[conn])})
 
 	case "PUBLISH":
 		channel := args[1]
-		// message := args[2]
 		numSubscribers := 0
-		subscribers, exists := server.subscribeCh[channel]
+		subscribers, exists := server.channelClients[channel]
 		if exists {
 			numSubscribers = len(subscribers)
 		}
 		response = encodeInteger(numSubscribers)
+
+	case "UNSUBSCRIBE":
+		channel := args[1]
+		delete(server.clientChannels[conn], channel)
+		delete(server.channelClients[channel], conn)
+
+		response = encodeAnyArray([]any{"unsubscribe", channel, len(server.clientChannels[conn])})
 
 	default:
 		fmt.Println("Unknown command:", command)
@@ -880,8 +897,8 @@ func main() {
 		waitCh:          make(chan int, 1),
 		dir:             dir,
 		dbFilename:      dbFilename,
-		subscribers:     make(map[net.Conn]map[string]bool),
-		subscribeCh:     make(map[string][]net.Conn),
+		clientChannels:  make(map[net.Conn]map[string]bool),
+		channelClients:  make(map[string]map[net.Conn]bool),
 	}
 
 	var rdbCache map[string]string
@@ -1013,7 +1030,7 @@ func handleRequest(conn net.Conn, server *RedisServer,
 		if command == "PUBLISH" {
 			channel := args[1]
 			notification := encodeStringArray([]string{"message", channel, args[2]})
-			for _, subscriber := range server.subscribeCh[channel] {
+			for subscriber := range server.channelClients[channel] {
 				_, err = subscriber.Write([]byte(notification))
 				if err != nil {
 					fmt.Println("Error sending response:", err.Error())
