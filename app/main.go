@@ -176,6 +176,12 @@ func validateCommand(args []string) error {
 		if len(args) != 4 {
 			return err
 		}
+
+	case "ZCARD":
+		// ZCARD <zset-key>
+		if len(args) != 2 {
+			return err
+		}
 	}
 
 	return nil
@@ -909,6 +915,18 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		list, _ := zset.skipList.Range(start, stop)
 
 		response = encodeStringArray(list)
+
+	case "ZCARD":
+		// ZCARD <zset-key>
+		setName := args[1]
+
+		entry, exists := cache.Get(setName)
+		if !exists {
+			response = encodeInteger(0)
+		} else {
+			zset := entry.(*SortedSet)
+			response = encodeInteger(zset.skipList.size)
+		}
 
 	default:
 		fmt.Println("Unknown command:", command)
