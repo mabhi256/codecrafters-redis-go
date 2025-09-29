@@ -165,7 +165,6 @@ func validateCommand(args []string) error {
 
 func (server *RedisServer) execute(args []string, respCommand string, conn net.Conn,
 	cache *RedisCache,
-	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 	rdbCache map[string]string, rdbExpiry map[string]int64,
 ) string {
 	command := args[0]
@@ -212,9 +211,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		}
 
 		cache.Set(args[1], &StringEntry{
-			value:  args[2],
-			expiry: expiryMs,
-		})
+			value: args[2],
+		}, expiryMs)
 
 		response = encodeSimpleString("OK")
 
@@ -237,9 +235,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 			if !exists {
 				response = encodeNullString()
-			} else if entry.IsExpired() {
-				cache.Del(key)
-				response = encodeNullString()
 			} else {
 				response = encodeBulkString(entry.(*StringEntry).value)
 			}
@@ -250,11 +245,10 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		key := args[1]
 		entry, exists := cache.Get(key)
 
-		if !exists || entry.IsExpired() {
+		if !exists {
 			cache.Set(key, &StringEntry{
-				value:  "1",
-				expiry: -1,
-			})
+				value: "1",
+			}, 0)
 			response = encodeInteger(1)
 		} else {
 			entryStr := entry.(*StringEntry)
@@ -265,10 +259,13 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			}
 
 			entryInt++
+			exp, expExists := cache.expiry[key]
+			if !expExists {
+				exp = 0
+			}
 			cache.Set(key, &StringEntry{
-				value:  strconv.Itoa(entryInt),
-				expiry: entryStr.expiry,
-			})
+				value: strconv.Itoa(entryInt),
+			}, exp)
 			response = encodeInteger(entryInt)
 		}
 
@@ -281,8 +278,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		if exists {
 			entry = list.(*ListEntry)
 		} else {
-			entry = &ListEntry{value: []string{}, expiry: -1}
-			cache.Set(key, entry)
+			entry = &ListEntry{value: []string{}}
+			cache.Set(key, entry, 0)
 		}
 
 		for _, item := range args[2:] {
@@ -303,8 +300,8 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		if exists {
 			entry = list.(*ListEntry)
 		} else {
-			entry = &ListEntry{value: []string{}, expiry: -1}
-			cache.Set(key, entry)
+			entry = &ListEntry{value: []string{}}
+			cache.Set(key, entry, 0)
 		}
 
 		for _, item := range args[2:] {
@@ -470,7 +467,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 				startID: entryID,
 				lastID:  "",
 			}
-			cache.Set(streamKey, entry)
+			cache.Set(streamKey, entry, 0)
 		}
 		if err != nil {
 			fmt.Println("Error generating streamID:", err.Error())
@@ -640,20 +637,20 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		}
 
 	case "MULTI":
-		txnQueue[connID] = [][]string{}
+		cache.txnQueue[connID] = [][]string{}
 		response = encodeSimpleString("OK")
 
 	case "EXEC":
-		tasks, exists := txnQueue[connID]
+		tasks, exists := cache.txnQueue[connID]
 
 		if !exists {
 			response = encodeSimpleError("ERR EXEC without MULTI")
 			break
 		}
-		delete(txnQueue, connID)
+		delete(cache.txnQueue, connID)
 
-		if execAbortQueue[connID] {
-			delete(execAbortQueue, connID)
+		if cache.execAbortQueue[connID] {
+			delete(cache.execAbortQueue, connID)
 			response = encodeSimpleError("EXECABORT Transaction discarded because of previous errors")
 			break
 		}
@@ -661,17 +658,17 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		response = fmt.Sprintf("*%d\r\n", len(tasks))
 
 		for _, task := range tasks {
-			response += server.execute(task, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
+			response += server.execute(task, respCommand, conn, cache, rdbCache, rdbExpiry)
 		}
 
 	case "DISCARD":
-		_, exists := txnQueue[connID]
+		_, exists := cache.txnQueue[connID]
 
 		if !exists {
 			response = encodeSimpleError("ERR DISCARD without MULTI")
 			break
 		}
-		delete(txnQueue, connID)
+		delete(cache.txnQueue, connID)
 
 		response = encodeSimpleString("OK")
 
@@ -859,12 +856,7 @@ func main() {
 	var l net.Listener
 	var err error
 
-	cache := &RedisCache{
-		data:     make(map[string]RedisValue),
-		blocking: make(chan BlockingItem, 100),
-	}
-	txnQueue := make(map[string][][]string) // connID -> array of args
-	execAbortQueue := make(map[string]bool)
+	cache := NewRedisCache()
 
 	argIdx := 1
 	port := "6379"
@@ -945,7 +937,7 @@ func main() {
 		defer masterConn.Close()
 
 		// execute replication commands from master
-		go handleRequest(masterConn, server, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
+		go handleRequest(masterConn, server, cache, rdbCache, rdbExpiry)
 	}
 
 	l, err = net.Listen("tcp", server.host)
@@ -962,13 +954,12 @@ func main() {
 			continue
 		}
 
-		go handleRequest(conn, server, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
+		go handleRequest(conn, server, cache, rdbCache, rdbExpiry)
 	}
 }
 
 func handleRequest(conn net.Conn, server *RedisServer,
 	cache *RedisCache,
-	txnQueue map[string][][]string, execAbortQueue map[string]bool,
 	rdbCache map[string]string, rdbExpiry map[string]int64,
 ) {
 	if server.role == "master" {
@@ -990,7 +981,7 @@ func handleRequest(conn net.Conn, server *RedisServer,
 
 		err = validateCommand(args)
 		if err != nil {
-			execAbortQueue[connID] = true
+			cache.execAbortQueue[connID] = true
 			response := encodeSimpleError(err.Error())
 			_, err = conn.Write([]byte(response))
 			if err != nil {
@@ -1001,9 +992,9 @@ func handleRequest(conn net.Conn, server *RedisServer,
 
 		command := args[0]
 
-		_, exists := txnQueue[connID]
+		_, exists := cache.txnQueue[connID]
 		if exists && command != "EXEC" && command != "DISCARD" {
-			txnQueue[connID] = append(txnQueue[connID], args)
+			cache.txnQueue[connID] = append(cache.txnQueue[connID], args)
 			response := encodeSimpleString("QUEUED")
 			_, err = conn.Write([]byte(response))
 			if err != nil {
@@ -1013,7 +1004,7 @@ func handleRequest(conn net.Conn, server *RedisServer,
 			continue
 		}
 
-		response := server.execute(args, respCommand, conn, cache, txnQueue, execAbortQueue, rdbCache, rdbExpiry)
+		response := server.execute(args, respCommand, conn, cache, rdbCache, rdbExpiry)
 
 		// fmt.Printf("Processed [%s] command: %v, Updating offset to: %d\n", redisServer.role, args, redisServer.replOffset)
 		// respond to client

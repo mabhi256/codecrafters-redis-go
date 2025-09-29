@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+type StreamEntry struct {
+	root    *RadixNode
+	startID string
+	lastID  string
+}
+
+func (e *StreamEntry) Type() string {
+	return "stream"
+}
+
 type StreamIDError struct {
 	message string
 }
