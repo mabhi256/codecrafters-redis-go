@@ -160,8 +160,14 @@ func validateCommand(args []string) error {
 		}
 
 	case "ZADD":
-		// ZADD <set-name> <score> <member-name>
+		// ZADD <zset-key> <score> <member-name>
 		if len(args) != 4 {
+			return err
+		}
+
+	case "ZRANK":
+		// ZRANK <zset-key> <member-name>
+		if len(args) != 3 {
 			return err
 		}
 	}
@@ -824,7 +830,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		response = encodeAnyArray([]any{"unsubscribe", channel, len(server.clientChannels[conn])})
 
 	case "ZADD":
-		// ZADD <set-name> <score> <member-name>
+		// ZADD <zset-key> <score> <member-name>
 		setName := args[1]
 		score, err := strconv.ParseFloat(args[2], 64)
 		if err != nil {
@@ -852,6 +858,27 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			cache.Set(setName, zset, 0)
 			response = encodeInteger(1)
 		}
+
+	case "ZRANK":
+		// ZRANK <zset-key> <member-name>
+		setName := args[1]
+		member := args[2]
+
+		entry, exists := cache.Get(setName)
+		if !exists {
+			response = encodeNullString()
+			break
+		}
+		zset := entry.(*SortedSet)
+
+		score, memberExists := zset.hashmap[member]
+		if !memberExists {
+			response = encodeNullString()
+			break
+		}
+
+		rank := zset.skipList.Rank(member, score)
+		response = encodeInteger(rank)
 
 	default:
 		fmt.Println("Unknown command:", command)

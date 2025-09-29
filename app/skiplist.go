@@ -1,6 +1,8 @@
 package main
 
-import "math/rand"
+import (
+	"math/rand"
+)
 
 const SKIPLIST_MAXLEVEL = 8 // (indices 0-7) Redis uses 32, but this is enough for us
 const SKIPLIST_P = 0.5      // Redis uses 0.25, higher P, more prob of higher levels, more memory, less search time
@@ -264,6 +266,7 @@ func (sk *SkipList) Rank(key string, score float64) int {
 			rank += node.span[level]
 			node = node.next[level]
 		}
+		level--
 	}
 
 	// After traversal, node.next[0] should be our target (if it exists)
