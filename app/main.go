@@ -158,6 +158,12 @@ func validateCommand(args []string) error {
 		if len(args) != 2 {
 			return err
 		}
+
+	case "ZADD":
+		// ZADD <set-name> <score> <member-name>
+		if len(args) != 4 {
+			return err
+		}
 	}
 
 	return nil
@@ -816,6 +822,29 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		delete(server.channelClients[channel], conn)
 
 		response = encodeAnyArray([]any{"unsubscribe", channel, len(server.clientChannels[conn])})
+
+	case "ZADD":
+		// ZADD <set-name> <score> <member-name>
+		setName := args[1]
+		score, err := strconv.ParseFloat(args[2], 64)
+		if err != nil {
+			response = encodeSimpleError("ERR value is not a valid float")
+			break
+		}
+		member := args[3]
+
+		entry, exists := cache.Get(args[1])
+
+		var zset *SortedSet
+		if !exists {
+			zset = NewSortedSet()
+		} else {
+			zset = entry.(*SortedSet)
+		}
+
+		zset.Insert(member, score)
+		cache.Set(setName, zset, 0)
+		response = encodeInteger(zset.skipList.size)
 
 	default:
 		fmt.Println("Unknown command:", command)
