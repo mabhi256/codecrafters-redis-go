@@ -170,6 +170,12 @@ func validateCommand(args []string) error {
 		if len(args) != 3 {
 			return err
 		}
+
+	case "ZRANGE":
+		// ZRANGE <zset-key> <start> <stop>
+		if len(args) != 4 {
+			return err
+		}
 	}
 
 	return nil
@@ -879,6 +885,30 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 		rank := zset.skipList.Rank(member, score)
 		response = encodeInteger(rank)
+
+	case "ZRANGE":
+		// ZRANGE <zset-key> <start> <stop>
+		setName := args[1]
+		start, err := strconv.Atoi(args[2])
+		if err != nil {
+			response = encodeSimpleError("ERR value is not an integer")
+			break
+		}
+		stop, err := strconv.Atoi(args[3])
+		if err != nil {
+			response = encodeSimpleError("ERR value is not an integer")
+			break
+		}
+
+		entry, exists := cache.Get(setName)
+		if !exists {
+			response = encodeStringArray([]string{})
+			break
+		}
+		zset := entry.(*SortedSet)
+		list, _ := zset.skipList.Range(start, stop)
+
+		response = encodeStringArray(list)
 
 	default:
 		fmt.Println("Unknown command:", command)

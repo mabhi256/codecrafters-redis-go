@@ -236,7 +236,7 @@ func (sk *SkipList) Range(start, stop int) ([]string, []float64) {
 
 	for level >= 0 {
 		// Move right until we reach predecessor of start position
-		for node.next[level] != nil && currRank+node.span[level] < start {
+		for node.next[level] != nil && currRank+node.span[level] <= start {
 			currRank += node.span[level]
 			node = node.next[level]
 		}
@@ -245,7 +245,7 @@ func (sk *SkipList) Range(start, stop int) ([]string, []float64) {
 
 	// Collect elements from start to stop
 	count := stop - start + 1
-	for count > 0 && node != nil {
+	for count > 0 {
 		node = node.next[0]
 		keys = append(keys, node.key)
 		scores = append(scores, node.value)
