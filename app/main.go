@@ -184,7 +184,13 @@ func validateCommand(args []string) error {
 		}
 
 	case "ZSCORE":
-		// ZCARD <zset-key> <member-name>
+		// ZSCORE <zset-key> <member-name>
+		if len(args) != 3 {
+			return err
+		}
+
+	case "ZREM":
+		// ZREM <zset-key> <member-name>
 		if len(args) != 3 {
 			return err
 		}
@@ -935,7 +941,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		}
 
 	case "ZSCORE":
-		// ZCARD <zset-key> <member-name>
+		// ZSCORE <zset-key> <member-name>
 		setName := args[1]
 		member := args[2]
 
@@ -954,6 +960,27 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 		scoreStr := strconv.FormatFloat(score, 'f', -1, 64) // -1 for max precision
 		response = encodeBulkString(scoreStr)
+
+	case "ZREM":
+		// ZREM <zset-key> <member-name>
+		setName := args[1]
+		member := args[2]
+
+		entry, exists := cache.Get(setName)
+		if !exists {
+			response = encodeInteger(0)
+			break
+		}
+
+		zset := entry.(*SortedSet)
+		_, exists = zset.hashmap[member]
+		if !exists {
+			response = encodeInteger(0)
+			break
+		}
+
+		zset.Remove(member)
+		response = encodeInteger(1)
 
 	default:
 		fmt.Println("Unknown command:", command)
