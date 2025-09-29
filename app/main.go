@@ -842,9 +842,16 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			zset = entry.(*SortedSet)
 		}
 
-		zset.Insert(member, score)
-		cache.Set(setName, zset, 0)
-		response = encodeInteger(zset.skipList.size)
+		_, memberExists := zset.hashmap[member]
+		if memberExists {
+			zset.Remove(member)
+			zset.Insert(member, score)
+			response = encodeInteger(0)
+		} else {
+			zset.Insert(member, score)
+			cache.Set(setName, zset, 0)
+			response = encodeInteger(1)
+		}
 
 	default:
 		fmt.Println("Unknown command:", command)

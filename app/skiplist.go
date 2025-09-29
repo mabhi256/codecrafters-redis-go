@@ -169,7 +169,7 @@ func (sk *SkipList) Insert(key string, score float64) {
 	}
 }
 
-func (sk *SkipList) Delete(key string, score float64) bool {
+func (sk *SkipList) Remove(key string, score float64) bool {
 	level := sk.maxLevelIdx
 	node := sk.header
 	update := make([]*SkipListNode, SKIPLIST_MAXLEVEL)

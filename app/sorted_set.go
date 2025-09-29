@@ -23,3 +23,12 @@ func (ss *SortedSet) Insert(member string, score float64) {
 	ss.skipList.Insert(member, score)
 	ss.hashmap[member] = score
 }
+
+func (ss *SortedSet) Remove(member string) {
+	score, exists := ss.hashmap[member]
+
+	if exists {
+		ss.skipList.Remove(member, score)
+		delete(ss.hashmap, member)
+	}
+}
