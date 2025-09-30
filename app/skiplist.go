@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
+	"strings"
 )
 
 const SKIPLIST_MAXLEVEL = 8 // (indices 0-7) Redis uses 32, but this is enough for us
@@ -219,7 +221,7 @@ func (sk *SkipList) Range(start, stop int) ([]string, []float64) {
 	if stop < 0 {
 		stop = max(0, stop+sk.size)
 	}
-	if stop > sk.size {
+	if stop >= sk.size {
 		stop = sk.size - 1
 	}
 
@@ -245,13 +247,21 @@ func (sk *SkipList) Range(start, stop int) ([]string, []float64) {
 
 	// Collect elements from start to stop
 	count := stop - start + 1
-	for count > 0 {
+	for count > 0 && node.next[0] != nil {
 		node = node.next[0]
 		keys = append(keys, node.key)
 		scores = append(scores, node.value)
 		count--
 	}
 
+	head := sk.header
+	list := []string{}
+	for head.next[0] != nil {
+		head = head.next[0]
+		list = append(list, head.key)
+	}
+	fmt.Println(strings.Join(list, " -> "))
+	fmt.Println(keys)
 	return keys, scores
 }
 
@@ -268,6 +278,14 @@ func (sk *SkipList) Rank(key string, score float64) int {
 		}
 		level--
 	}
+
+	head := sk.header
+	list := []string{}
+	for head.next[0] != nil {
+		head = head.next[0]
+		list = append(list, head.key)
+	}
+	fmt.Println(strings.Join(list, " -> "))
 
 	// After traversal, node.next[0] should be our target (if it exists)
 	target := node.next[0]
