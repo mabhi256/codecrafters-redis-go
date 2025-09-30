@@ -62,5 +62,36 @@ func encodeGeohash(lon, lat float64) float64 {
 }
 
 func dencodeGeohash(geohash float64) (float64, float64) {
-	return 0, 0
+	score := uint64(geohash) // we only using 52 bits, so it is safe to do this
+
+	lonMin, lonMax := -180.0, 180.0
+	latMin, latMax := -85.05112878, 85.05112878
+
+	// Read bits from MSB (bit 51) to LSB (bit 0)
+	for i := 51; i >= 0; i-- {
+		bit := (score >> i) & 1
+
+		// Encoding longitude: i=0 (even) created the MSB → Decoding: bit 51 (odd)
+		if i%2 == 1 { // longitude bit
+			xmid := (lonMin + lonMax) / 2
+			if bit == 1 {
+				lonMin = xmid // right half
+			} else {
+				lonMax = xmid
+			}
+		} else {
+			ymid := (latMin + latMax) / 2
+			if bit == 1 {
+				latMin = ymid // top half
+			} else {
+				latMax = ymid
+			}
+		}
+	}
+
+	// After 52 bits, we've narrowed to a small rectangle, return its centre
+	lon := (lonMin + lonMax) / 2
+	lat := (latMin + latMax) / 2
+
+	return lon, lat
 }
