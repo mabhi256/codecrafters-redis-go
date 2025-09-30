@@ -194,6 +194,12 @@ func validateCommand(args []string) error {
 		if len(args) != 3 {
 			return err
 		}
+
+	case "GEOADD":
+		// GEOADD <geo-key> <lon> <lat> <member-name>
+		if len(args) != 5 {
+			return err
+		}
 	}
 
 	return nil
@@ -981,6 +987,41 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 		zset.Remove(member)
 		response = encodeInteger(1)
+
+	case "GEOADD":
+		// GEOADD <geo-key> <lon> <lat> <member-name>
+		geoSetName := args[1]
+		lon, err := strconv.ParseFloat(args[2], 64)
+		if err != nil {
+			response = encodeSimpleError("ERR value is not a valid float")
+			break
+		}
+		lat, err := strconv.ParseFloat(args[3], 64)
+		if err != nil {
+			response = encodeSimpleError("ERR value is not a valid float")
+			break
+		}
+		member := args[4]
+
+		entry, exists := cache.Get(args[1])
+
+		var geoSet *GeoSet
+		if !exists {
+			geoSet = NewGeoSet()
+		} else {
+			geoSet = entry.(*GeoSet)
+		}
+
+		_, memberExists := geoSet.lon[member]
+		if memberExists {
+			geoSet.Remove(member)
+			geoSet.Insert(member, lon, lat)
+			response = encodeInteger(0)
+		} else {
+			geoSet.Insert(member, lon, lat)
+			cache.Set(geoSetName, geoSet, 0)
+			response = encodeInteger(1)
+		}
 
 	default:
 		fmt.Println("Unknown command:", command)
