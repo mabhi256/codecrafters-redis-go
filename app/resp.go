@@ -107,6 +107,10 @@ func encodeAnyArray(values []any) string {
 
 	encoded := fmt.Sprintf("*%d\r\n", len(values))
 	for _, value := range values {
+		if value == nil {
+			encoded += encodeNullArray()
+		}
+
 		switch value := value.(type) {
 		case string:
 			encoded += encodeBulkString(value)

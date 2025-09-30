@@ -6,6 +6,10 @@ func (ss *SortedSet) InsertGeohash(member string, lon, lat float64) {
 	ss.hashmap[member] = score
 }
 
+func (ss *SortedSet) GetCoordinates(geohash float64) (float64, float64) {
+	return dencodeGeohash(geohash)
+}
+
 // const base32 = "0123456789bcdefghjkmnpqrstuvwxyz" // (geohash-specific) 0-9, b-z excluding a,i,l,o
 //
 // ┌─┬──────────┬────────────────────────────────────────────────────┐
@@ -57,6 +61,6 @@ func encodeGeohash(lon, lat float64) float64 {
 	return float64(score)
 }
 
-func dencodeGeohash(lat, lon float64) (float64, float64) {
+func dencodeGeohash(geohash float64) (float64, float64) {
 	return 0, 0
 }

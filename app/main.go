@@ -200,6 +200,12 @@ func validateCommand(args []string) error {
 		if len(args) != 5 {
 			return err
 		}
+
+	case "GEOPOS":
+		// GEOPOS <geo-key> <member-name1>...
+		if len(args) < 3 {
+			return err
+		}
 	}
 
 	return nil
@@ -1011,7 +1017,6 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		member := args[4]
 
 		entry, exists := cache.Get(args[1])
-
 		var geoSet *SortedSet
 		if !exists {
 			geoSet = NewSortedSet()
@@ -1029,6 +1034,34 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			cache.Set(geoSetName, geoSet, 0)
 			response = encodeInteger(1)
 		}
+
+	case "GEOPOS":
+		// GEOPOS <geo-key> <member-name>
+		setName := args[1]
+		members := args[2:]
+
+		entry, exists := cache.Get(setName)
+		if !exists {
+			response = encodeAnyArray(make([]any, len(members)))
+			break
+		}
+		geoSet := entry.(*SortedSet)
+
+		encoded := []any{}
+		for _, member := range members {
+			score, memberExists := geoSet.hashmap[member]
+			if !memberExists {
+				encoded = append(encoded, nil)
+				continue
+			}
+
+			lon, lat := geoSet.GetCoordinates(score)
+			lonStr := strconv.FormatFloat(lon, 'f', -1, 64)
+			latStr := strconv.FormatFloat(lat, 'f', -1, 64)
+
+			encoded = append(encoded, []string{lonStr, latStr})
+		}
+		response = encodeAnyArray(encoded)
 
 	default:
 		fmt.Println("Unknown command:", command)
