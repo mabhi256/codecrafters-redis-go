@@ -1254,9 +1254,11 @@ func handleRequest(conn net.Conn, server *RedisServer,
 
 		// fmt.Printf("Processed [%s] command: %v, Updating offset to: %d\n", redisServer.role, args, redisServer.replOffset)
 		// respond to client
-		if server.role == "master" ||
-			(server.role == "slave" && conn.RemoteAddr().String() != server.master) ||
-			(server.role == "slave" && conn.RemoteAddr().String() == server.master && args[0] == "REPLCONF" && args[1] == "GETACK") {
+		skipResponse := server.role == "slave" &&
+			conn.RemoteAddr().String() == server.master &&
+			!(command == "REPLCONF" && len(args) > 1 && args[1] == "GETACK")
+
+		if !skipResponse && response != "" {
 			_, err = conn.Write([]byte(response))
 			if err != nil {
 				fmt.Println("Error sending response:", err.Error())
