@@ -140,6 +140,10 @@ func (sk *SkipList) Insert(key string, score float64) {
 	node := sk.header
 
 	for level >= 0 {
+		if level < sk.maxLevelIdx {
+			rank[level] = rank[level+1]
+		}
+
 		// move right on this level as long as possible
 		for sk.shouldMoveRight(node.next[level], score, key) {
 			rank[level] += node.span[level]
