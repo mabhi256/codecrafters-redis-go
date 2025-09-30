@@ -1012,20 +1012,20 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 
 		entry, exists := cache.Get(args[1])
 
-		var geoSet *GeoSet
+		var geoSet *SortedSet
 		if !exists {
-			geoSet = NewGeoSet()
+			geoSet = NewSortedSet()
 		} else {
-			geoSet = entry.(*GeoSet)
+			geoSet = entry.(*SortedSet)
 		}
 
-		_, memberExists := geoSet.lon[member]
+		_, memberExists := geoSet.hashmap[member]
 		if memberExists {
 			geoSet.Remove(member)
-			geoSet.Insert(member, lon, lat)
+			geoSet.InsertGeohash(member, lon, lat)
 			response = encodeInteger(0)
 		} else {
-			geoSet.Insert(member, lon, lat)
+			geoSet.InsertGeohash(member, lon, lat)
 			cache.Set(geoSetName, geoSet, 0)
 			response = encodeInteger(1)
 		}
