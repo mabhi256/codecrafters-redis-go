@@ -1,12 +1,14 @@
 package main
 
+import "math"
+
 func (ss *SortedSet) InsertGeohash(member string, lon, lat float64) {
 	score := encodeGeohash(lon, lat)
 	ss.skipList.Insert(member, score)
 	ss.hashmap[member] = score
 }
 
-func (ss *SortedSet) GetCoordinates(geohash float64) (float64, float64) {
+func GetCoordinates(geohash float64) (float64, float64) {
 	return dencodeGeohash(geohash)
 }
 
@@ -94,4 +96,25 @@ func dencodeGeohash(geohash float64) (float64, float64) {
 	lat := (latMin + latMax) / 2
 
 	return lon, lat
+}
+
+func haversine(θ float64) float64 {
+	return 0.5 * (1 - math.Cos(θ))
+}
+
+func radToDeg(radian float64) float64 {
+	return radian * math.Pi / 180
+}
+
+func HaversineDist(score1, score2 float64) float64 {
+	const rEarth = 6372797.560856 // meters
+
+	lon1, lat1 := GetCoordinates(score1) // lon, lat
+	lon2, lat2 := GetCoordinates(score2)
+
+	ψ1, φ1 := radToDeg(lon1), radToDeg(lat1)
+	ψ2, φ2 := radToDeg(lon2), radToDeg(lat2)
+
+	return 2 * rEarth * math.Asin(math.Sqrt(
+		haversine(φ2-φ1)+math.Cos(φ1)*math.Cos(φ2)*haversine(ψ2-ψ1)))
 }

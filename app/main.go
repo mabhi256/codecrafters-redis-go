@@ -202,8 +202,14 @@ func validateCommand(args []string) error {
 		}
 
 	case "GEOPOS":
-		// GEOPOS <geo-key> <member-name1>...
+		// GEOPOS <geo-key> <member1>...
 		if len(args) < 3 {
+			return err
+		}
+
+	case "GEODIST":
+		// GEODIST <geo-key> <member1> <member2>
+		if len(args) != 4 {
 			return err
 		}
 	}
@@ -1036,7 +1042,7 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		}
 
 	case "GEOPOS":
-		// GEOPOS <geo-key> <member-name>
+		// GEOPOS <geo-key> <member1>...
 		setName := args[1]
 		members := args[2:]
 
@@ -1055,13 +1061,42 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 				continue
 			}
 
-			lon, lat := geoSet.GetCoordinates(score)
+			lon, lat := GetCoordinates(score)
 			lonStr := strconv.FormatFloat(lon, 'f', -1, 64)
 			latStr := strconv.FormatFloat(lat, 'f', -1, 64)
 
 			encoded = append(encoded, []string{lonStr, latStr})
 		}
 		response = encodeAnyArray(encoded)
+
+	case "GEODIST":
+		// GEODIST <geo-key> <member1> <member2>
+		setName := args[1]
+		member1 := args[2]
+		member2 := args[3]
+
+		entry, exists := cache.Get(setName)
+		if !exists {
+			response = encodeNullString()
+			break
+		}
+		geoSet := entry.(*SortedSet)
+
+		score1, member1Exists := geoSet.hashmap[member1]
+		if !member1Exists {
+			response = encodeNullString()
+			break
+		}
+
+		score2, member2Exists := geoSet.hashmap[member2]
+		if !member2Exists {
+			response = encodeNullString()
+			break
+		}
+
+		dist := HaversineDist(score1, score2)
+		distStr := strconv.FormatFloat(dist, 'f', -1, 64)
+		response = encodeBulkString(distStr)
 
 	default:
 		fmt.Println("Unknown command:", command)
