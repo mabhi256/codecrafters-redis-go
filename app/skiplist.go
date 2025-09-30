@@ -228,6 +228,7 @@ func (sk *SkipList) Range(start, stop int) ([]string, []float64) {
 	if start >= sk.size || start > stop {
 		return nil, nil
 	}
+	fmt.Printf("final range: [%d, %d]\n", start, stop)
 
 	keys := []string{}
 	scores := []float64{}

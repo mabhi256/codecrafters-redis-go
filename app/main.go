@@ -1001,6 +1001,13 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 			response = encodeSimpleError("ERR value is not a valid float")
 			break
 		}
+
+		if lon < -180 || lon > 180 || lat < -85.05112878 || lat > 85.05112878 {
+			errorMsg := fmt.Sprintf("ERR invalid longitude,latitude pair %s, %s", args[2], args[3])
+			response = encodeSimpleError(errorMsg)
+			break
+		}
+
 		member := args[4]
 
 		entry, exists := cache.Get(args[1])
