@@ -98,6 +98,8 @@ func dencodeGeohash(geohash float64) (float64, float64) {
 	return lon, lat
 }
 
+const rEarth = 6372797.560856 // meters
+
 func haversine(θ float64) float64 {
 	return 0.5 * (1 - math.Cos(θ))
 }
@@ -106,8 +108,12 @@ func radToDeg(radian float64) float64 {
 	return radian * math.Pi / 180
 }
 
+func hsDist(ψ1, φ1, ψ2, φ2 float64) float64 {
+	return 2 * rEarth * math.Asin(math.Sqrt(
+		haversine(φ2-φ1)+math.Cos(φ1)*math.Cos(φ2)*haversine(ψ2-ψ1)))
+}
+
 func HaversineDist(score1, score2 float64) float64 {
-	const rEarth = 6372797.560856 // meters
 
 	lon1, lat1 := GetCoordinates(score1) // lon, lat
 	lon2, lat2 := GetCoordinates(score2)
@@ -115,6 +121,22 @@ func HaversineDist(score1, score2 float64) float64 {
 	ψ1, φ1 := radToDeg(lon1), radToDeg(lat1)
 	ψ2, φ2 := radToDeg(lon2), radToDeg(lat2)
 
-	return 2 * rEarth * math.Asin(math.Sqrt(
-		haversine(φ2-φ1)+math.Cos(φ1)*math.Cos(φ2)*haversine(ψ2-ψ1)))
+	return hsDist(ψ1, φ1, ψ2, φ2)
+}
+
+func (ss *SortedSet) SearchFrom(lon, lat, radius float64) []string {
+	ψ1, φ1 := radToDeg(lon), radToDeg(lat)
+
+	result := []string{}
+	for member, score := range ss.hashmap {
+		lon2, lat2 := GetCoordinates(score)
+		ψ2, φ2 := radToDeg(lon2), radToDeg(lat2)
+
+		dist := hsDist(ψ1, φ1, ψ2, φ2)
+		if dist <= radius {
+			result = append(result, member)
+		}
+	}
+
+	return result
 }

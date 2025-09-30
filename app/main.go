@@ -212,6 +212,12 @@ func validateCommand(args []string) error {
 		if len(args) != 4 {
 			return err
 		}
+
+	case "GEOSEARCH":
+		// GEOSEARCH places FROMLONLAT <lon> <lat> BYRADIUS <radius> m
+		if len(args) != 8 {
+			return err
+		}
 	}
 
 	return nil
@@ -1097,6 +1103,35 @@ func (server *RedisServer) execute(args []string, respCommand string, conn net.C
 		dist := HaversineDist(score1, score2)
 		distStr := strconv.FormatFloat(dist, 'f', -1, 64)
 		response = encodeBulkString(distStr)
+
+	case "GEOSEARCH":
+		// GEOSEARCH places FROMLONLAT <lon> <lat> BYRADIUS <radius> m
+		setName := args[1]
+		lon, err := strconv.ParseFloat(args[3], 64)
+		if err != nil {
+			response = encodeSimpleError("ERR value is not a valid float")
+			break
+		}
+		lat, err := strconv.ParseFloat(args[4], 64)
+		if err != nil {
+			response = encodeSimpleError("ERR value is not a valid float")
+			break
+		}
+		radius, err := strconv.ParseFloat(args[6], 64)
+		if err != nil {
+			response = encodeSimpleError("ERR value is not a valid float")
+			break
+		}
+
+		entry, exists := cache.Get(setName)
+		if !exists {
+			response = encodeNullString()
+			break
+		}
+		geoSet := entry.(*SortedSet)
+
+		locations := geoSet.SearchFrom(lon, lat, radius)
+		response = encodeStringArray(locations)
 
 	default:
 		fmt.Println("Unknown command:", command)
