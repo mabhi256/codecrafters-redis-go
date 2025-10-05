@@ -1366,3 +1366,4 @@ func handleRequest(conn net.Conn, server *RedisServer,
 // todo: Implement save to create dump file
 // todo: keep main hashmap as map[string]{objType, valueEncoding} and a separate expiry hashmap
 // load main & expiry hashmap from rdb at start (we have string, list, stream, sorted-set, pub/sub, geo)
+// todo: in geospatial.go - SearchFrom - leverage skiplist instead of fullscan.
